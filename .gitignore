@@ -1,0 +1,28 @@
+# Karpathy's nanoGPT, kept locally as a reference only
+nanoGPT/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Data and model files (too big for git; regenerate or download them)
+data/**/*.bin
+data/**/*.txt
+data/**/*.json
+data/**/*.pkl
+checkpoints/*
+!checkpoints/.gitkeep
+*.pt
+
+# Logs and outputs
+wandb/
+experiments/results/
+experiments/smoke/
+.ipynb_checkpoints/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/

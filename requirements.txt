@@ -1,0 +1,22 @@
+# PyTorch: on an ARM laptop / WSL, install the CPU build first:
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+# On Kaggle, the GPU build is already installed.
+torch>=2.5
+
+# Core
+numpy
+tqdm
+
+# Part 1: tokenizer, data, experiments
+regex           # GPT-style pre-tokenization pattern (needs \p{L} support)
+datasets        # download TinyStories from Hugging Face
+matplotlib      # loss curves, ablation plots
+tiktoken        # compare our tokenizer against GPT-2's
+
+# Testing
+pytest
+
+# Part 3: serving
+fastapi
+uvicorn[standard]
+gradio
