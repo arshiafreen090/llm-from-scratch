@@ -109,17 +109,22 @@ def test_requests_do_not_touch_global_randomness(generator):
     assert torch.equal(state, torch.get_rng_state())
 
 
-class FailingGenerator(Generator):
-    """Crashes on prompts containing "boom", works normally otherwise."""
+class FailingModel(TinyLLaMA):
+    """Crashes when prefilling the prompt "boom", works normally otherwise."""
+    bad_prompt = None
 
-    def stream(self, prompt, params=None, result=None, chat=False):
-        if "boom" in prompt:
+    def forward(self, idx, *args, **kwargs):
+        if idx.size(1) > 1 and idx[0].tolist() == self.bad_prompt:
             raise RuntimeError("simulated failure inside generation")
-        yield from super().stream(prompt, params, result, chat=chat)
+        return super().forward(idx, *args, **kwargs)
 
 
 def test_one_failing_request_does_not_affect_others(generator):
-    client = TestClient(create_app(FailingGenerator(generator.model, generator.tok)))
+    model = FailingModel(generator.model.cfg)
+    model.load_state_dict(generator.model.state_dict())
+    failing = Generator(model, generator.tok)
+    model.bad_prompt = failing.encode_prompt("boom")
+    client = TestClient(create_app(failing))
     bad = client.post("/generate", json={"prompt": "boom", "max_new_tokens": 5})
     assert bad.status_code == 500 and "simulated failure" in bad.json()["detail"]
 
@@ -132,19 +137,36 @@ def test_one_failing_request_does_not_affect_others(generator):
     assert client.get("/health").json()["busy"] is False
 
 
-def test_concurrent_requests_queue_up(client):
-    """Two requests at once: one runs, the other waits for the model, and reports that wait."""
+def concurrent_calls(client, n, prompt="Once", max_new_tokens=60):
     results = []
 
     def call():
-        r = client.post("/generate", json={"prompt": "Once", "max_new_tokens": 60, "temperature": 0})
+        r = client.post("/generate", json={"prompt": prompt, "max_new_tokens": max_new_tokens,
+                                           "temperature": 0})
         results.append(r.json())
 
-    threads = [threading.Thread(target=call) for _ in range(2)]
+    threads = [threading.Thread(target=call) for _ in range(n)]
     for t in threads:
         t.start()
     for t in threads:
         t.join()
-    assert len(results) == 2
+    assert len(results) == n
+    return results
+
+
+def test_without_batching_requests_queue_up(generator):
+    """max_batch=1: one runs, the other waits for the model, and reports that wait."""
+    results = concurrent_calls(TestClient(create_app(generator, max_batch=1)), 2)
     waits = sorted(r["latency"]["queue_ms"] for r in results)
     assert waits[1] > 0.5 * min(r["latency"]["total_ms"] for r in results)
+
+
+def test_with_batching_requests_run_together(generator):
+    """max_batch=4: nobody waits for another request to finish, and sharing the batch
+    doesn't change what anyone gets."""
+    client = TestClient(create_app(generator, max_batch=4))
+    alone = client.post("/generate", json={"prompt": "Once", "max_new_tokens": 60, "temperature": 0}).json()
+    results = concurrent_calls(client, 3)
+    assert all(r["text"] == alone["text"] for r in results)
+    assert max(r["latency"]["queue_ms"] for r in results) < 0.5 * min(r["latency"]["total_ms"] for r in results)
+    assert client.get("/health").json()["running"] == 0

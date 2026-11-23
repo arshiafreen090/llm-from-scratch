@@ -17,40 +17,45 @@ Interactive docs (try requests from the browser): http://localhost:8000/docs
 Architecture
 ------------
     HTTP request threads  --submit job-->  [ job queue ]  -->  ONE model worker thread
-           ^                                                       |
+           ^                                                    running a BatchEngine
            +---------------- tokens (per-job queue) ---------------+
 
-* One model worker thread owns the model: it loads it and runs every generation.
-  Two reasons:
-    1. Speed. PyTorch's CPU thread pool (OpenMP) slows down badly when model calls come
-       from many different threads: measured 37 tok/s instead of 460+ on this laptop.
-       One owning thread avoids that entirely.
-    2. Running two generations at once on one CPU/GPU doesn't finish them faster; they just
-       slow each other down. So jobs wait in a queue, and the response reports how long
-       each one waited (queue_ms). Serving many users efficiently needs BATCHING, i.e.
-       running several requests through the model together, which will live in this same
-       worker. This server is the baseline that batching gets measured against.
-* Backpressure: if too many jobs are already waiting, new requests get HTTP 503
-  ("try again later") immediately, instead of piling up until everything times out.
+* One model worker thread owns the model: it loads it and runs every forward pass.
+  PyTorch's CPU thread pool (OpenMP) slows down badly when model calls come from many
+  different threads (measured 37 tok/s instead of 460+ on this laptop); one owning
+  thread avoids that entirely.
+* Continuous batching (inference/batching.py): up to --max_batch requests run TOGETHER,
+  one token each per forward pass. A finished request leaves at once and a waiting one
+  joins at the next step. --max_batch 1 turns it off (one request at a time).
+* Backpressure: when all rows are busy, jobs wait in the queue; if too many are already
+  waiting, new requests get HTTP 503 ("try again later") immediately, instead of piling
+  up until everything times out.
 * Cancellation: if a client disconnects (or times out), its job is marked cancelled and the
-  worker stops generating for it at the next token.
+  worker drops it before the next step, freeing its row for someone else.
 
 Request isolation (what one request can and can't affect in another)
 --------------------------------------------------------------------
-    per request, never shared    KV cache (made fresh per generation), sampling parameters,
-                                 random generator (own seed, returned in the response),
-                                 output queue, cancel flag, result object
+    per request, never shared    sampling parameters, random generator (own seed, returned
+                                 in the response), token history, UTF-8 decoder, stop
+                                 condition, output queue, cancel flag, result object
+    own row in a shared tensor   KV cache: each running request owns one row ("slot"). The
+                                 attention mask limits row b to its own positions 0..pos[b],
+                                 so it never reads another request's keys or the leftovers
+                                 of the slot's previous owner. Every model operation is
+                                 per-row, so a request generates exactly what it would alone
+                                 (tests/test_batching.py checks token-for-token equality).
     shared, read-only            model weights (eval mode, inference_mode: never modified)
     shared, written              the tokenizer's chunk cache: dict reads/writes are atomic
                                  under CPython's GIL, and a cached value is the same no matter
                                  which request computed it
-    failure isolation            an exception inside one generation is reported to that
-                                 request only (500 / error event); the worker keeps serving
-    NOT isolated yet             latency: jobs run one at a time, so a long generation delays
-                                 everyone queued behind it (head-of-line blocking). Fixing
-                                 that is the job of batching, which must keep every row above
-                                 per-request: its own cache slot, sampling params, RNG and
-                                 stop condition.
+    failure isolation            a failure in one request's prefill or sampling is reported
+                                 to that request only (500 / error event). A failure inside
+                                 the SHARED decode pass reaches every request in that pass:
+                                 each gets an error, and the worker keeps serving new ones.
+    latency (partly shared)      no more head-of-line blocking up to max_batch requests, but
+                                 each step is slower with more rows, and a new prompt's
+                                 prefill pauses the others for one pass (chunked prefill
+                                 would smooth that out).
 """
 
 import argparse
@@ -64,6 +69,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from inference.batching import BatchEngine, Sequence
 from inference.generate import GenerationResult, Generator
 from inference.sampling import SamplingParams
 
@@ -103,21 +109,22 @@ def result_payload(result: GenerationResult, queue_ms: float):
 # =============================================================================
 
 class Job:
-    def __init__(self, prompt: str, params: SamplingParams, chat: bool = False):
-        self.prompt, self.params, self.chat = prompt, params, chat
+    def __init__(self, prompt_ids, params: SamplingParams):
+        self.prompt_ids, self.params = prompt_ids, params
         self.out = queue.Queue()            # ("token", text) ... then ("done", result) or ("error", msg)
         self.cancelled = threading.Event()  # set by the request side when the client is gone
         self.submitted = time.perf_counter()
-        self.queue_ms = 0.0
+        self.queue_ms = 0.0                 # time until it got a row and its prefill started
 
 
 class ModelWorker:
-    """A single thread that owns the model and runs queued jobs one at a time."""
+    """A single thread that owns the model and runs a BatchEngine: up to max_batch jobs at once."""
 
-    def __init__(self, load_generator, max_waiting=16):
-        self.jobs = queue.Queue()
+    def __init__(self, load_generator, max_waiting=16, max_batch=8):
+        self.jobs = queue.Queue()  # waiting for a free row
         self.max_waiting = max_waiting
-        self.busy = False
+        self.max_batch = max_batch
+        self.running = 0
         self.generator = None
         self._load_error = None
         self._ready = threading.Event()
@@ -126,9 +133,14 @@ class ModelWorker:
         if self._load_error is not None:
             raise self._load_error
 
+    @property
+    def busy(self):
+        return self.running > 0
+
     def _run(self, load_generator):
         try:
             self.generator = load_generator()  # loaded ON this thread, like every model call after it
+            engine = BatchEngine(self.generator, self.max_batch)
         except Exception as e:
             self._load_error = e
         self._ready.set()
@@ -136,29 +148,40 @@ class ModelWorker:
             return
 
         while True:
-            job = self.jobs.get()
-            if job.cancelled.is_set():
-                continue  # the client gave up while waiting: skip it
-            job.queue_ms = (time.perf_counter() - job.submitted) * 1000
-            self.busy = True
-            result = GenerationResult(text="")
-            try:
-                for piece in self.generator.stream(job.prompt, job.params, result, chat=job.chat):
-                    if job.cancelled.is_set():
-                        break
-                    job.out.put(("token", piece))
-                outcome = ("done", result)
-            except Exception as e:
-                outcome = ("error", str(e))
-            # mark the worker free BEFORE the client hears "done", so a /health call made
-            # right after a response never sees a stale busy=True
-            self.busy = False
-            job.out.put(outcome)
+            # 1. take new jobs while there are free rows. Block only when there's nothing
+            #    to run; otherwise just grab whatever has already arrived and keep stepping.
+            while engine.free_slots() > 0:
+                try:
+                    job = self.jobs.get(block=not engine.has_work())
+                except queue.Empty:
+                    break
+                if job.cancelled.is_set():
+                    continue  # the client gave up while waiting: skip it
+                try:
+                    engine.add(Sequence(job.prompt_ids, job.params, tag=job))
+                except Exception as e:
+                    job.out.put(("error", str(e)))
 
-    def submit(self, prompt, params, chat=False) -> Job:
+            # 2. drop requests whose client is gone; their rows go to someone else
+            for seq in engine.sequences():
+                if seq.tag.cancelled.is_set():
+                    engine.abort(seq)
+
+            # 3. one step for every running request, then hand each its events
+            events = engine.step()
+            # update the count BEFORE clients hear "done", so a /health call made right
+            # after a response never sees a stale busy=True
+            self.running = len(engine.running)
+            for seq, kind, value in events:
+                job = seq.tag
+                if seq.t_start is not None:
+                    job.queue_ms = (seq.t_start - job.submitted) * 1000
+                job.out.put((kind, value))
+
+    def submit(self, prompt_ids, params) -> Job:
         if self.jobs.qsize() >= self.max_waiting:
             raise HTTPException(503, f"server busy: {self.jobs.qsize()} requests already waiting")
-        job = Job(prompt, params, chat)
+        job = Job(prompt_ids, params)
         self.jobs.put(job)
         return job
 
@@ -168,10 +191,10 @@ class ModelWorker:
 # =============================================================================
 
 def create_app(generator: Generator = None, load_generator=None, max_waiting: int = 16,
-               timeout_s: float = 300.0) -> FastAPI:
+               timeout_s: float = 300.0, max_batch: int = 8) -> FastAPI:
     """Pass either a ready `generator` (tests) or a `load_generator` function (real server,
-    so the model is created on the worker thread)."""
-    worker = ModelWorker(load_generator or (lambda: generator), max_waiting)
+    so the model is created on the worker thread). max_batch=1 turns batching off."""
+    worker = ModelWorker(load_generator or (lambda: generator), max_waiting, max_batch)
     gen = worker.generator
     cfg = gen.model.cfg
     app = FastAPI(title="llm-from-scratch", description="A small LLaMA-style model trained from scratch.")
@@ -185,7 +208,8 @@ def create_app(generator: Generator = None, load_generator=None, max_waiting: in
 
     @app.get("/health")
     def health():
-        return {"status": "ok", "busy": worker.busy, "waiting": worker.jobs.qsize()}
+        return {"status": "ok", "busy": worker.busy, "running": worker.running,
+                "max_batch": worker.max_batch, "waiting": worker.jobs.qsize()}
 
     @app.get("/info")
     def info():
@@ -199,10 +223,10 @@ def create_app(generator: Generator = None, load_generator=None, max_waiting: in
     # blocks the server (e.g. /health keeps answering while a generation runs).
     @app.post("/generate")
     def generate(req: GenerateRequest):
-        prompt_len = len(gen.encode_prompt(req.prompt, chat=req.chat))
-        if prompt_len >= cfg.block_size:
-            raise HTTPException(400, f"prompt is {prompt_len} tokens; the model's context is {cfg.block_size}")
-        job = worker.submit(req.prompt, req.sampling_params(), req.chat)  # 503 here if the queue is full
+        prompt_ids = gen.encode_prompt(req.prompt, chat=req.chat)
+        if len(prompt_ids) >= cfg.block_size:
+            raise HTTPException(400, f"prompt is {len(prompt_ids)} tokens; the model's context is {cfg.block_size}")
+        job = worker.submit(prompt_ids, req.sampling_params())  # 503 here if the queue is full
 
         if not req.stream:
             try:
@@ -246,11 +270,13 @@ def main():
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--device", default="auto")
     parser.add_argument("--max_waiting", type=int, default=16, help="queue length before returning 503")
+    parser.add_argument("--max_batch", type=int, default=8,
+                        help="requests decoded together per forward pass (1 = no batching)")
     args = parser.parse_args()
 
     import uvicorn
     app = create_app(load_generator=lambda: Generator.from_checkpoint(args.ckpt, args.device),
-                     max_waiting=args.max_waiting)
+                     max_waiting=args.max_waiting, max_batch=args.max_batch)
     uvicorn.run(app, host=args.host, port=args.port)
 
 

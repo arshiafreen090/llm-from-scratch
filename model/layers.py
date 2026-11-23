@@ -110,11 +110,38 @@ class KVCache:
         self.v = torch.zeros(shape, device=device, dtype=dtype)
 
     def update(self, k, v, start_pos):
-        """Write the new k, v at positions start_pos.. and return everything cached so far."""
+        """Write the new k, v at positions start_pos.. and return everything cached so far.
+
+        start_pos is either
+            an int:     every row writes at the same positions (one request, or a static batch)
+            a tensor:   (B,) one position per row (continuous batching: every request in the
+                        batch is at a different point of its own sequence)
+        """
         T = k.size(2)
+        if isinstance(start_pos, torch.Tensor):
+            rows = torch.arange(k.size(0), device=k.device)[:, None]               # (B, 1)
+            cols = start_pos[:, None] + torch.arange(T, device=k.device)          # (B, T)
+            # self.k[rows, :, cols] has shape (B, T, nkv, hd); k is (B, nkv, T, hd)
+            self.k[rows, :, cols] = k.transpose(1, 2)
+            self.v[rows, :, cols] = v.transpose(1, 2)
+            # return up to the LONGEST row; shorter rows mask out what lies past their end
+            end = int(start_pos.max()) + T
+            return self.k[:, :, :end], self.v[:, :, :end]
         self.k[:, :, start_pos:start_pos + T] = k
         self.v[:, :, start_pos:start_pos + T] = v
         return self.k[:, :, :start_pos + T], self.v[:, :, :start_pos + T]
+
+    def rows(self, start, end):
+        """A view of rows start..end-1. Writes through the view land in this cache, so a
+        batching engine can hand one request's slot (or the first n slots) to the model."""
+        view = KVCache.__new__(KVCache)
+        view.k, view.v = self.k[start:end], self.v[start:end]
+        return view
+
+    def copy_row(self, src, dst, length):
+        """Move one request's cached keys/values (positions 0..length-1) to another row."""
+        self.k[dst, :, :length] = self.k[src, :, :length]
+        self.v[dst, :, :length] = self.v[src, :, :length]
 
 
 # =============================================================================
@@ -156,11 +183,22 @@ class Attention(nn.Module):
         k = self.k_proj(x).view(B, T, self.n_kv_head, self.head_dim).transpose(1, 2)
         v = self.v_proj(x).view(B, T, self.n_kv_head, self.head_dim).transpose(1, 2)
 
+        # start_pos: an int (all rows at the same position) or a (B,) tensor (each row at its
+        # own position: continuous batching). The new tokens of row b sit at positions
+        # start_pos[b] .. start_pos[b]+T-1.
+        per_row = isinstance(start_pos, torch.Tensor)
+        if per_row:
+            assert kv_cache is not None, "per-row positions are only used with a KV cache"
+            positions = start_pos[:, None] + torch.arange(T, device=x.device)  # (B, T)
+
         # RoPE rotates q and k only (v carries content, not position).
-        # With a cache, the new tokens sit at positions start_pos .. start_pos+T-1.
         if self.use_rope:
             cos, sin = rope
-            cos, sin = cos[start_pos:start_pos + T], sin[start_pos:start_pos + T]
+            if per_row:
+                # look up each row's own angles: (B, T, hd/2) -> (B, 1, T, hd/2), broadcast over heads
+                cos, sin = cos[positions].unsqueeze(1), sin[positions].unsqueeze(1)
+            else:
+                cos, sin = cos[start_pos:start_pos + T], sin[start_pos:start_pos + T]
             q = apply_rope(q, cos, sin)
             k = apply_rope(k, cos, sin)
 
@@ -176,7 +214,14 @@ class Attention(nn.Module):
             v = v.repeat_interleave(repeats, dim=1)
 
         # causal masking: a token may attend to itself and earlier tokens only
-        if T == T_k:
+        if per_row:
+            # each row has its own length. Key j is visible to row b's query t iff
+            # j <= positions[b, t]. This also hides whatever lies past a row's end:
+            # leftovers from the slot's previous request, or nothing written yet.
+            key_pos = torch.arange(T_k, device=x.device)
+            mask = (key_pos[None, None, :] <= positions[:, :, None]).unsqueeze(1)  # (B, 1, T, T_k)
+            is_causal = False
+        elif T == T_k:
             mask, is_causal = None, True   # training, or the first pass over a prompt
         elif T == 1:
             mask, is_causal = None, False  # one new token: every cached token is in its past

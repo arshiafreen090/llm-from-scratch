@@ -76,18 +76,24 @@ class TinyLLaMA(nn.Module):
         targets:   (B, T) next-token ids, or None. -1 = "don't compute loss here"
                    (used in Part 2 to skip the loss on prompt tokens)
         kv_caches: one KVCache per layer, or None
-        start_pos: position of idx[:, 0] in the full sequence (> 0 when using a cache)
+        start_pos: position of idx[:, 0] in the full sequence (> 0 when using a cache).
+                   An int, or a (B,) tensor giving each row its own position
+                   (continuous batching, see inference/batching.py).
 
         Returns (logits, loss). With targets: logits for every position.
         Without: logits for the last position only (that's all generation needs).
         """
         B, T = idx.shape
-        assert start_pos + T <= self.cfg.block_size, (
-            f"sequence length {start_pos + T} exceeds block_size {self.cfg.block_size}")
+        last = int(start_pos.max()) if isinstance(start_pos, torch.Tensor) else start_pos
+        assert last + T <= self.cfg.block_size, (
+            f"sequence length {last + T} exceeds block_size {self.cfg.block_size}")
 
         x = self.tok_emb(idx)  # (B, T, C)
         if self.pos_emb is not None:
-            pos = torch.arange(start_pos, start_pos + T, device=idx.device)
+            if isinstance(start_pos, torch.Tensor):
+                pos = start_pos[:, None] + torch.arange(T, device=idx.device)  # (B, T)
+            else:
+                pos = torch.arange(start_pos, start_pos + T, device=idx.device)  # (T,)
             x = x + self.pos_emb(pos)
         x = self.drop(x)
 
