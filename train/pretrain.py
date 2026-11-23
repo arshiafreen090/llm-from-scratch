@@ -156,6 +156,16 @@ def evaluate(model, val_data, starts, block_size, batch_size, token_bytes, devic
 # Setup helpers
 # =============================================================================
 
+def has_native_bf16():
+    """True only on GPUs with bfloat16 tensor cores: Ampere (A100, RTX 30xx) and newer,
+    i.e. compute capability 8.0+.
+
+    Don't use torch.cuda.is_bf16_supported() for this: in recent PyTorch it also returns
+    True when bf16 only works through EMULATION, as on Kaggle's T4 (compute capability 7.5).
+    Emulated bf16 runs, but skips the tensor cores, so it's much slower than fp16 there."""
+    return torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 8
+
+
 def resolve_device_dtype(cfg):
     device = cfg.device
     if device == "auto":
@@ -163,8 +173,9 @@ def resolve_device_dtype(cfg):
     dtype = cfg.dtype
     if dtype == "auto":
         if device == "cuda":
-            # T4 and P100 (Kaggle) have no bf16 support, so they fall back to fp16
-            dtype = "bfloat16" if torch.cuda.is_bf16_supported() else "float16"
+            # bf16 where the hardware has it; otherwise fp16 (T4, P100), which needs the
+            # GradScaler below but runs on the tensor cores
+            dtype = "bfloat16" if has_native_bf16() else "float16"
         else:
             dtype = "float32"
     return device, dtype

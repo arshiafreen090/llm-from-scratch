@@ -152,3 +152,38 @@ def test_seeds_are_grouped_together(finished_run):
     other_seed = copy.deepcopy(finished_run)
     other_seed["train_config"]["seed"] = 2
     assert len(group_by_model([finished_run, other_seed])) == 1
+
+
+# ---- precision choice -----------------------------------------------------------------
+
+@pytest.mark.parametrize("capability,expected", [
+    ((7, 5), "float16"),    # T4: bf16 only emulated -> fp16 on the tensor cores
+    ((6, 0), "float16"),    # P100
+    ((8, 0), "bfloat16"),   # A100
+    ((8, 9), "bfloat16"),   # RTX 40xx / L4
+])
+def test_auto_dtype_uses_bf16_only_where_native(monkeypatch, capability, expected):
+    from train import pretrain
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a: capability)
+    # recent PyTorch says True on a T4 too (emulation): the choice must not depend on it
+    monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda *a, **k: True)
+    assert pretrain.resolve_device_dtype(TrainConfig(device="cuda")) == ("cuda", expected)
+    assert pretrain.resolve_device_dtype(TrainConfig(device="cuda", dtype="bfloat16"))[1] == "bfloat16"
+
+
+def test_auto_dtype_on_cpu_is_float32():
+    assert TrainConfig().dtype == "auto"
+    from train.pretrain import resolve_device_dtype
+    assert resolve_device_dtype(TrainConfig(device="cpu")) == ("cpu", "float32")
+
+
+def test_runner_refuses_to_mix_precisions(tmp_path):
+    from experiments.run_ablations import dtype_conflicts
+    for name, dtype in [("small-gpt2-s1", "bfloat16"), ("small-llama-s1", "bfloat16")]:
+        (tmp_path / name).mkdir()
+        (tmp_path / name / "final.json").write_text(json.dumps({"dtype": dtype}))
+    (tmp_path / "unfinished-run").mkdir()  # no final.json: ignored
+    assert dtype_conflicts(str(tmp_path), "bfloat16") == []
+    assert dtype_conflicts(str(tmp_path), "float16") == [("small-gpt2-s1", "bfloat16"), ("small-llama-s1", "bfloat16")]
+    assert dtype_conflicts(str(tmp_path / "missing"), "float16") == []

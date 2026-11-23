@@ -5,6 +5,10 @@ Run the ablation plan from experiments/PROTOCOL.md, one run per GPU at a time.
     python -m experiments.run_ablations --seeds 1 2          # the full plan
     python -m experiments.run_ablations --only baseline llama --seeds 1
     python -m experiments.run_ablations --dry_run            # just print what would run
+    python -m experiments.run_ablations --seeds 2 --dtype bfloat16   # match runs trained in bf16
+
+Precision: --dtype auto picks bf16 on GPUs with native support (Ampere+), fp16 otherwise
+(e.g. T4). Runs of one comparison must share a dtype: the runner refuses to mix them.
 
 Resumable: runs that already have a final.json are skipped. If a Kaggle session times out,
 start it again and it continues where it stopped (a run that was cut off restarts from zero).
@@ -24,7 +28,7 @@ import time
 
 import torch
 
-from train.pretrain import TrainConfig
+from train.pretrain import TrainConfig, resolve_device_dtype
 
 # baseline + one change at a time, then everything together (see PROTOCOL.md)
 ABLATIONS = {
@@ -50,6 +54,23 @@ def plan(names, seeds, common):
 
 def is_finished(out_dir, run_name):
     return os.path.exists(os.path.join(out_dir, run_name, "final.json"))
+
+
+def dtype_conflicts(out_dir, dtype):
+    """Finished runs in out_dir that were trained in a different dtype than `dtype`.
+    Runs in different precisions aren't comparable (compare.py would flag them), so
+    the runner refuses to start instead of spending GPU hours on them."""
+    conflicts = []
+    if not os.path.isdir(out_dir):
+        return conflicts
+    for name in sorted(os.listdir(out_dir)):
+        path = os.path.join(out_dir, name, "final.json")
+        if os.path.exists(path):
+            with open(path) as f:
+                used = json.load(f).get("dtype")
+            if used != dtype:
+                conflicts.append((name, used))
+    return conflicts
 
 
 def run_all(runs, out_dir, gpu_ids):
@@ -106,6 +127,8 @@ def main():
     parser.add_argument("--token_budget", type=int, default=100_000_000)
     parser.add_argument("--out_dir", default="experiments/results")
     parser.add_argument("--data_dir", default="data/tinystories")
+    parser.add_argument("--dtype", default="auto", choices=["auto", "float32", "bfloat16", "float16"],
+                        help="training precision; every run of one comparison must use the same one")
     parser.add_argument("--benchmark", action="store_true", help="short runs to measure speed")
     parser.add_argument("--dry_run", action="store_true")
     args = parser.parse_args()
@@ -113,9 +136,11 @@ def main():
     n_gpus = torch.cuda.device_count()
     gpu_ids = list(range(n_gpus)) if n_gpus else [None]
     hw = ", ".join(torch.cuda.get_device_name(i) for i in range(n_gpus)) if n_gpus else "CPU only"
-    print(f"hardware: {hw}  ->  {len(gpu_ids)} run(s) at a time")
+    _, dtype = resolve_device_dtype(TrainConfig(dtype=args.dtype))
+    print(f"hardware: {hw}  ->  {len(gpu_ids)} run(s) at a time, {dtype}")
 
-    common = dict(size=args.size, token_budget=args.token_budget, out_dir=args.out_dir, data_dir=args.data_dir)
+    common = dict(size=args.size, token_budget=args.token_budget, out_dir=args.out_dir, data_dir=args.data_dir,
+                  dtype=dtype)
 
     if args.benchmark:
         # ~2.6M tokens each, with almost no evaluation: just measures training speed
@@ -142,6 +167,15 @@ def main():
         if total > 11:
             print("that's more than one 12-hour Kaggle session: run --seeds 1 now and --seeds 2 in a second session")
         return
+
+    conflicts = dtype_conflicts(args.out_dir, dtype)
+    if conflicts:
+        print(f"\nnot starting: these finished runs in {args.out_dir} were trained in another precision,")
+        print(f"so new {dtype} runs wouldn't be comparable with them:")
+        for name, used in conflicts:
+            print(f"  {name:<40} {used}")
+        print(f"pass --dtype {conflicts[0][1]} to match them, or use a different --out_dir for a new comparison")
+        sys.exit(1)
 
     runs = plan(args.only, args.seeds, common)
     todo = [r for r in runs if not is_finished(args.out_dir, r[0])]

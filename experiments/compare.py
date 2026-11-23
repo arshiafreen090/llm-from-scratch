@@ -19,6 +19,7 @@ import argparse
 import glob
 import json
 import os
+import re
 import statistics
 
 # must be identical across runs for the comparison to measure only the model
@@ -95,7 +96,14 @@ def main():
     groups = group_by_model(runs)
     base_group = groups[0]
     if args.baseline:
-        base_group = next(g for g in groups if any(r["run_name"] == args.baseline for r in g))
+        # match the name with ANY seed: "small-gpt2-s1" also finds the group if only s2 is here
+        unseeded = re.sub(r"-s\d+$", "", args.baseline)
+        matches = [g for g in groups if any(re.sub(r"-s\d+$", "", r["run_name"]) == unseeded for r in g)]
+        if not matches:
+            print(f"baseline run {args.baseline} not found (with any seed); runs here: "
+                  + ", ".join(r["run_name"] for r in runs))
+            return
+        base_group = matches[0]
     groups = [base_group] + [g for g in groups if g is not base_group]  # baseline row first
     base_cfg = base_group[0]["model_config"]
     base_loss = statistics.mean(r["final_val_loss"] for r in base_group)

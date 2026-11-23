@@ -27,9 +27,13 @@ The rules are in `experiments/PROTOCOL.md`.
 3. Run it with **Save Version → Save & Run All (Commit)**. That keeps running after you close
    the browser (up to 12 hours), and everything in `/kaggle/working` is saved with the version.
 
-## Second session (seed 2, or after a timeout)
-Add this notebook's previous version as an input (**Add Input → Your Work → this notebook**).
-The "restore" cell below copies the finished runs back, and the runner skips them.
+## Seeds and sessions
+Seed 1 is done (results are in the repo's README). This version runs **seed 2** plus
+instruction tuning: about 4 hours on two T4s. Seed 1's results are merged locally afterwards.
+
+If a session times out, add the timed-out version as an input
+(**Add Input → Your Work → this notebook**): the "restore" cell copies its finished runs
+back, and the runner skips them.
 """)
 
 code("""
@@ -86,24 +90,29 @@ code("""
 md("""
 ## 5. Benchmark: how long will the full plan take?
 Two short runs (baseline and mini-LLaMA, ~2.6M tokens each) measure training speed on
-this GPU, then print an estimate for the 100M-token runs.
+this GPU, then print an estimate for the 100M-token runs. Measured twice: in float16
+(the T4's tensor cores) and in bfloat16 (only emulated on a T4), to see the difference.
 """)
 code("""
-!python -m experiments.run_ablations --benchmark --data_dir {DATA}
+!python -m experiments.run_ablations --benchmark --dtype float16 --data_dir {DATA}
+!python -m experiments.run_ablations --benchmark --dtype bfloat16 --data_dir {DATA}
 """)
 
 md("""
 ## 6. The ablation runs
 6 configurations x the seeds below, one run per GPU at a time. Finished runs are skipped.
-If the benchmark said the full plan doesn't fit in one session, keep `SEEDS = "1"` now and
-run `SEEDS = "2"` in a second session.
+
+**Precision must match across seeds.** Seed 1 was trained in bfloat16, so seed 2 uses
+bfloat16 too, even though float16 is faster on a T4. A brand-new comparison could use
+`DTYPE = "auto"` (float16 on a T4). The runner refuses to mix precisions in one results folder.
 
 Progress lines are printed as runs start and finish. Each run's full log is in
 `experiments/results/<run>/stdout.log`.
 """)
 code("""
-SEEDS = "1"
-!python -m experiments.run_ablations --seeds {SEEDS} --data_dir {DATA}
+SEEDS = "2"
+DTYPE = "bfloat16"
+!python -m experiments.run_ablations --seeds {SEEDS} --dtype {DTYPE} --data_dir {DATA}
 """)
 
 md("## 7. Results")
@@ -116,20 +125,23 @@ Image("experiments/loss_curves.png")
 
 md("""
 ## 8. Instruction tuning (Part 2)
-Fine-tunes the mini-LLaMA (`small-llama-s1`) on 100k TinyStories-Instruct examples, then
-measures instruction following (share of required words used) against the pretrained model's
-chance level. Skip this section if `checkpoints/small-llama-s1.pt` doesn't exist yet.
+Fine-tunes a pretrained mini-LLaMA (`small-llama-s1`, or `small-llama-s2` if seed 1's
+checkpoint isn't here) on 100k TinyStories-Instruct examples, then measures instruction
+following (share of required words used) against the pretrained model's chance level.
+Precision is auto: float16 on a T4.
 """)
 code("""
 SFT_DATA = "/tmp/tinystories_sft"
-BASE = "checkpoints/small-llama-s1.pt"
-if os.path.exists(BASE):
+BASE = next((p for p in ["checkpoints/small-llama-s1.pt", "checkpoints/small-llama-s2.pt"] if os.path.exists(p)), None)
+if BASE:
+    SFT_CKPT = "checkpoints/sft-" + os.path.basename(BASE)
+    print("fine-tuning", BASE)
     if not os.path.exists(f"{SFT_DATA}/train.bin"):
         !python -m data.prepare_sft --out_dir {SFT_DATA}
     !python -m train.sft --init_ckpt {BASE} --data_dir {SFT_DATA}
-    !python -m experiments.eval_instruct --ckpts {BASE} checkpoints/sft-small-llama-s1.pt --examples {SFT_DATA}/val_examples.jsonl --n 200
+    !python -m experiments.eval_instruct --ckpts {BASE} {SFT_CKPT} --examples {SFT_DATA}/val_examples.jsonl --n 200
 else:
-    print("no pretrained checkpoint yet: run the ablations first")
+    print("no pretrained mini-LLaMA checkpoint yet: run the ablations first")
 """)
 
 md("""
