@@ -147,6 +147,31 @@ def test_kv_cache_matches_full_recompute(arch, n_kv_head):
         assert torch.allclose(step_logits[i][:, 0], full_logits[:, t], atol=1e-4), f"mismatch at {t}"
 
 
+@pytest.mark.parametrize("arch", ["llama", "gpt2"])
+def test_kv_cache_logits_match_over_full_context(arch):
+    """Decode one token at a time through the ENTIRE context window (up to position
+    block_size - 1, where the RoPE table / learned position table ends) and compare every
+    step's logits with a single uncached forward pass.
+
+    The comparison is RELATIVE to the size of the logits: an untrained model's logits are
+    tiny, so a fixed tolerance like 1e-4 could hide a large relative error."""
+    torch.manual_seed(1)
+    cfg = get_config("tiny", arch, block_size=64)
+    model = TinyLLaMA(cfg).eval()
+    idx = torch.randint(0, cfg.vocab_size, (2, 64))
+    full_logits, _ = model(idx, idx)                       # (2, 64, vocab) in one pass
+
+    caches = model.make_kv_caches(batch_size=2)
+    worst = 0.0
+    for t in range(64):                                    # position 0 .. 63
+        step, _ = model(idx[:, t:t + 1], kv_caches=caches, start_pos=t)
+        ref = full_logits[:, t]
+        rel = ((step[:, 0] - ref).abs().max() / ref.abs().max()).item()
+        worst = max(worst, rel)
+        assert torch.equal(step[:, 0].argmax(-1), ref.argmax(-1)), f"argmax differs at position {t}"
+    assert worst < 1e-5, f"worst relative logit error {worst:.2e}"
+
+
 def test_kv_cache_chunked_prefill():
     """Several new tokens on top of an existing cache (the explicit-mask branch)."""
     cfg = tiny()

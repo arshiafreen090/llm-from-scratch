@@ -32,7 +32,10 @@ class SamplingParams:
     min_p: Optional[float] = None      # e.g. 0.05
     repetition_penalty: float = 1.0    # 1.0 = off. 1.1-1.3 discourages loops
     seed: Optional[int] = None         # set for reproducible samples
-    stop_at_eot: bool = True           # stop when the model produces <|endoftext|>
+    # stop when the model produces ANY special token (<|endoftext|>, <|user|>, <|assistant|>).
+    # Special tokens are control signals, never visible text: after instruction tuning,
+    # <|user|> means "the assistant's turn is over", so it must end the reply, not be printed.
+    stop_at_special: bool = True
 
 
 def apply_repetition_penalty(logits, history, penalty):

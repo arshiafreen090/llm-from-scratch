@@ -34,6 +34,23 @@ Architecture
   ("try again later") immediately, instead of piling up until everything times out.
 * Cancellation: if a client disconnects (or times out), its job is marked cancelled and the
   worker stops generating for it at the next token.
+
+Request isolation (what one request can and can't affect in another)
+--------------------------------------------------------------------
+    per request, never shared    KV cache (made fresh per generation), sampling parameters,
+                                 random generator (own seed, returned in the response),
+                                 output queue, cancel flag, result object
+    shared, read-only            model weights (eval mode, inference_mode: never modified)
+    shared, written              the tokenizer's chunk cache: dict reads/writes are atomic
+                                 under CPython's GIL, and a cached value is the same no matter
+                                 which request computed it
+    failure isolation            an exception inside one generation is reported to that
+                                 request only (500 / error event); the worker keeps serving
+    NOT isolated yet             latency: jobs run one at a time, so a long generation delays
+                                 everyone queued behind it (head-of-line blocking). Fixing
+                                 that is the job of batching, which must keep every row above
+                                 per-request: its own cache slot, sampling params, RNG and
+                                 stop condition.
 """
 
 import argparse
@@ -72,6 +89,7 @@ def result_payload(result: GenerationResult, queue_ms: float):
     return {
         "text": result.text,
         "finish_reason": result.finish_reason,
+        "seed": result.seed,
         "usage": {"prompt_tokens": result.prompt_tokens, "completion_tokens": len(result.token_ids)},
         "latency": {"queue_ms": round(queue_ms, 1), "ttft_ms": round(result.ttft_ms, 1),
                     "decode_tokens_per_s": round(result.decode_tokens_per_s, 1),

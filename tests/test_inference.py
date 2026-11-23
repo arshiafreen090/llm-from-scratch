@@ -94,7 +94,7 @@ def gen():
 
 def test_greedy_matches_model_generate(gen):
     """Our engine and the simple model.generate() must agree token for token."""
-    params = SamplingParams(temperature=0, max_new_tokens=30, stop_at_eot=False)
+    params = SamplingParams(temperature=0, max_new_tokens=30, stop_at_special=False)
     result = gen.generate("Once upon a time", params)
     prompt = torch.tensor([gen.encode_prompt("Once upon a time")])
     reference = gen.model.generate(prompt, 30, temperature=0)[0, prompt.size(1):].tolist()
@@ -102,12 +102,12 @@ def test_greedy_matches_model_generate(gen):
 
 
 def test_seed_makes_sampling_reproducible(gen):
-    params = SamplingParams(temperature=1.0, top_p=0.95, max_new_tokens=20, seed=7, stop_at_eot=False)
+    params = SamplingParams(temperature=1.0, top_p=0.95, max_new_tokens=20, seed=7, stop_at_special=False)
     assert gen.generate("Tom", params).token_ids == gen.generate("Tom", params).token_ids
 
 
 def test_stream_pieces_add_up_to_full_text(gen):
-    params = SamplingParams(temperature=1.0, max_new_tokens=40, seed=3, stop_at_eot=False)
+    params = SamplingParams(temperature=1.0, max_new_tokens=40, seed=3, stop_at_special=False)
     result = GenerationResult(text="")
     pieces = list(gen.stream("Lily", params, result))
     assert "".join(pieces) == result.text == gen.tok.decode(result.token_ids)
@@ -130,13 +130,82 @@ def test_stream_never_emits_half_a_character(gen):
 
 def test_stops_at_context_limit(gen):
     prompt_len = len(gen.encode_prompt("Once upon a time"))
-    params = SamplingParams(temperature=0, max_new_tokens=1000, stop_at_eot=False)
+    params = SamplingParams(temperature=0, max_new_tokens=1000, stop_at_special=False)
     result = gen.generate("Once upon a time", params)
     assert len(result.token_ids) == 128 - prompt_len
     assert result.finish_reason == "context"
 
 
 def test_latency_stats_are_filled(gen):
-    result = gen.generate("Once", SamplingParams(temperature=0, max_new_tokens=10, stop_at_eot=False))
+    result = gen.generate("Once", SamplingParams(temperature=0, max_new_tokens=10, stop_at_special=False))
     assert result.finish_reason == "length"
     assert result.ttft_ms > 0 and result.decode_tokens_per_s > 0 and result.prompt_tokens == 2
+
+
+# ---- tokenizer-specific decoding ------------------------------------------------------
+
+class ScriptedModel(torch.nn.Module):
+    """Stands in for the model: emits a fixed sequence of tokens, one per forward call."""
+
+    def __init__(self, cfg, script):
+        super().__init__()
+        self.cfg, self.script, self.calls = cfg, list(script), 0
+        self.dummy = torch.nn.Parameter(torch.zeros(1))  # so .parameters() has a device
+
+    def make_kv_caches(self, batch_size):
+        return None
+
+    def forward(self, idx, targets=None, kv_caches=None, start_pos=0):
+        token = self.script[min(self.calls, len(self.script) - 1)]
+        self.calls += 1
+        logits = torch.full((idx.size(0), 1, self.cfg.vocab_size), -1e9)
+        logits[..., token] = 0.0
+        return logits, None
+
+
+def scripted_generator(gen, script):
+    return Generator(ScriptedModel(gen.model.cfg, script), gen.tok)
+
+
+@pytest.mark.parametrize("special", ["<|user|>", "<|assistant|>", "<|endoftext|>"])
+def test_any_special_token_ends_the_reply(gen, special):
+    """After instruction tuning, <|user|> means "the assistant is done". It must stop the
+    reply, and a control token must never reach the user as visible text."""
+    script = gen.tok.encode(" The end.") + [gen.tok.special_tokens[special]] + gen.tok.encode(" Hello")
+    result = scripted_generator(gen, script).generate("x", SamplingParams(temperature=0, max_new_tokens=20))
+    assert result.text == " The end."
+    assert result.finish_reason == "stop"
+
+
+def test_special_tokens_are_never_streamed_even_when_not_stopping(gen):
+    script = gen.tok.encode(" A") + [gen.tok.special_tokens["<|user|>"]] + gen.tok.encode(" B")
+    params = SamplingParams(temperature=0, max_new_tokens=3, stop_at_special=False)
+    result = scripted_generator(gen, script).generate("x", params)
+    assert "<|" not in result.text
+    assert result.text.startswith(" A")
+
+
+def test_streaming_equals_bulk_decoding_for_any_bytes(gen):
+    """Randomized check: for arbitrary token sequences, including byte tokens that form
+    INVALID UTF-8, the streamed pieces must join to exactly what decode() gives in one go.
+    (A naive streamer that decodes each token separately fails this.)"""
+    rng = torch.Generator().manual_seed(0)
+    ordinary = gen.tok.vocab_size - len(gen.tok.special_tokens)
+
+    class FakeStream(Generator):
+        def __init__(self, base, ids):
+            super().__init__(base.model, base.tok)
+            self.ids = ids
+
+        def stream_ids(self, prompt_ids, params, result):
+            for t in self.ids:
+                result.token_ids.append(t)
+                yield t
+
+    for _ in range(300):
+        n = int(torch.randint(1, 30, (1,), generator=rng))
+        # half the time only raw byte tokens (0..255), which often form invalid UTF-8
+        high = 256 if torch.rand(1, generator=rng) < 0.5 else ordinary
+        ids = torch.randint(0, high, (n,), generator=rng).tolist()
+        pieces = list(FakeStream(gen, ids).stream("x"))
+        assert "".join(pieces) == gen.tok.decode(ids)

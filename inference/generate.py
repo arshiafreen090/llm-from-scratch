@@ -20,6 +20,7 @@ The two latency numbers that matter when serving an LLM:
 
 import argparse
 import codecs
+import os
 import time
 from dataclasses import dataclass, field
 from typing import List
@@ -38,6 +39,7 @@ class GenerationResult:
     token_ids: List[int] = field(default_factory=list)
     finish_reason: str = ""      # "stop" (<|endoftext|>), "length" (max_new_tokens), "context" (block_size full)
     prompt_tokens: int = 0
+    seed: int = 0                # the seed actually used; send it back to reproduce this output
     ttft_ms: float = 0.0         # time to first token
     decode_tokens_per_s: float = 0.0  # speed after the first token
     total_ms: float = 0.0
@@ -54,6 +56,7 @@ class Generator:
         self.model = model.eval()
         self.tok = tokenizer
         self.device = next(model.parameters()).device
+        self.special_ids = set(tokenizer.special_tokens.values())
 
     @classmethod
     def from_checkpoint(cls, path, device="auto"):
@@ -82,9 +85,13 @@ class Generator:
         result.prompt_tokens = len(prompt_ids)
         max_new = min(params.max_new_tokens, cfg.block_size - len(prompt_ids))
 
-        rng = None
-        if params.seed is not None:
-            rng = torch.Generator(device=self.device).manual_seed(params.seed)
+        # Every request gets its OWN random generator. Using PyTorch's global one would make a
+        # request's output depend on whatever other requests ran before it (and on any other
+        # code that draws random numbers). Without a seed we draw a fresh one and report it,
+        # so any response can be reproduced exactly by sending the same seed back.
+        seed = params.seed if params.seed is not None else int.from_bytes(os.urandom(8), "little") >> 1
+        result.seed = seed
+        rng = torch.Generator(device=self.device).manual_seed(seed)
 
         t_start = time.perf_counter()
         history = torch.tensor([prompt_ids], dtype=torch.long, device=self.device)
@@ -102,9 +109,15 @@ class Generator:
                 t_first = time.perf_counter()
                 result.ttft_ms = (t_first - t_start) * 1000
             token = int(next_id)
-            if params.stop_at_eot and token == self.tok.eot_id:
-                result.finish_reason = "stop"
-                break
+            if token in self.special_ids:
+                if params.stop_at_special:
+                    result.finish_reason = "stop"
+                    break
+                # not stopping: still never stream a control token as text
+                history = torch.cat([history, next_id], dim=1)
+                logits, _ = self.model(next_id, kv_caches=caches, start_pos=pos)
+                pos += 1
+                continue
             result.token_ids.append(token)
             yield token
 

@@ -120,7 +120,9 @@ class TinyLLaMA(nn.Module):
 
         use_cache=False recomputes the whole sequence every step, like nanoGPT does.
         use_cache=True  feeds only the newest token and reuses the cached keys/values.
-        Both give identical results; the cache is just much faster.
+        In float32 both give the same results; the cache is just much faster. In fp16/bf16
+        the two paths round differently, so greedy decoding can occasionally pick the other
+        of two near-tied tokens (measure it with inference/check_cache.py).
         """
         self.eval()
         # this simple version stops at the context limit instead of sliding a window
