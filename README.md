@@ -63,6 +63,18 @@ python -m experiments.compare --baseline small-gpt2-s1
 python -m experiments.plot
 ```
 
+## Generating and serving
+
+```bash
+# generate from a checkpoint (streams tokens, prints TTFT and decode speed)
+python -m inference.generate --ckpt checkpoints/<run>.pt --prompt "Once upon a time" --top_p 0.9
+
+# HTTP API with Server-Sent Events streaming; docs at http://localhost:8000/docs
+python -m serve.api --ckpt checkpoints/<run>.pt --port 8000
+curl -N -X POST localhost:8000/generate -H "Content-Type: application/json" \
+     -d '{"prompt": "Once upon a time", "stream": true}'
+```
+
 ## Results
 
 _Ablation and benchmark tables will go here._
