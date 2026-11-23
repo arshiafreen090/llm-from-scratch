@@ -46,6 +46,23 @@ pip install -r requirements.txt
 
 On Kaggle, PyTorch with GPU support is already installed.
 
+## Running the ablations on Kaggle
+
+Import `notebooks/kaggle_train.ipynb` into Kaggle (**File → Import Notebook**), set the
+accelerator to **GPU T4 x2** and turn **Internet** on, then **Save & Run All (Commit)**.
+It clones this repo, tokenizes TinyStories, benchmarks the GPU, and runs every
+configuration in [experiments/PROTOCOL.md](experiments/PROTOCOL.md).
+
+The same steps work anywhere with a GPU:
+
+```bash
+python -m data.prepare_pretrain                      # tokenize TinyStories
+python -m experiments.run_ablations --benchmark      # measure speed, estimate total time
+python -m experiments.run_ablations --seeds 1 2      # all runs (finished ones are skipped)
+python -m experiments.compare --baseline small-gpt2-s1
+python -m experiments.plot
+```
+
 ## Results
 
 _Ablation and benchmark tables will go here._

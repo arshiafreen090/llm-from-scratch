@@ -96,6 +96,7 @@ def main():
     base_group = groups[0]
     if args.baseline:
         base_group = next(g for g in groups if any(r["run_name"] == args.baseline for r in g))
+    groups = [base_group] + [g for g in groups if g is not base_group]  # baseline row first
     base_cfg = base_group[0]["model_config"]
     base_loss = statistics.mean(r["final_val_loss"] for r in base_group)
 
@@ -116,7 +117,7 @@ def main():
                      f"{mean_std(bpbs)} | {delta:+.4f} | {speed:,.0f} |")
 
     ref = runs[0]
-    footer = (f"\nAll runs: {ref['tokens_trained'] / 1e6:.0f}M tokens, block {ref['train_config']['block_size']}, "
+    footer = (f"\nAll runs: {ref['tokens_trained'] / 1e6:.1f}M tokens, block {ref['train_config']['block_size']}, "
               f"lr {ref['train_config']['lr']}, data_seed {ref['train_config']['data_seed']}, "
               f"{ref['final_val_windows']} val windows, {ref['dtype']}, tokenizer {ref['tokenizer']}.")
     if any(len(g) == 1 for g in groups):
