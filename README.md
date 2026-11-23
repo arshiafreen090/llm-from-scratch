@@ -63,6 +63,21 @@ python -m experiments.compare --baseline small-gpt2-s1
 python -m experiments.plot
 ```
 
+## Instruction tuning (Part 2)
+
+```bash
+python -m data.prepare_sft                                   # TinyStories-Instruct -> chat-formatted examples
+python -m train.sft --init_ckpt checkpoints/small-llama-s1.pt
+python -m experiments.eval_instruct --ckpts checkpoints/small-llama-s1.pt checkpoints/sft-small-llama-s1.pt
+python -m inference.generate --ckpt checkpoints/sft-small-llama-s1.pt --chat \
+       --prompt "Write a story. Use the words: rain, ball, happy."
+```
+
+The chat template lives in one place ([tokenizer/chat.py](tokenizer/chat.py)) and is shared by data
+prep, training and inference. The loss is computed on response tokens only. Instruction following is
+measured as the share of required words that appear in the story, against a pretrained model's
+chance level.
+
 ## Generating and serving
 
 ```bash

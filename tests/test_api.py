@@ -112,10 +112,10 @@ def test_requests_do_not_touch_global_randomness(generator):
 class FailingGenerator(Generator):
     """Crashes on prompts containing "boom", works normally otherwise."""
 
-    def stream(self, prompt, params=None, result=None):
+    def stream(self, prompt, params=None, result=None, chat=False):
         if "boom" in prompt:
             raise RuntimeError("simulated failure inside generation")
-        yield from super().stream(prompt, params, result)
+        yield from super().stream(prompt, params, result, chat=chat)
 
 
 def test_one_failing_request_does_not_affect_others(generator):

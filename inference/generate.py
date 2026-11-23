@@ -30,6 +30,7 @@ import torch
 from inference.sampling import SamplingParams, sample_next
 from model.config import ModelConfig
 from model.model import TinyLLaMA
+from tokenizer.chat import prompt_ids
 from tokenizer.tokenizer import Tokenizer
 
 
@@ -52,11 +53,12 @@ class GenerationResult:
 
 class Generator:
 
-    def __init__(self, model: TinyLLaMA, tokenizer: Tokenizer):
+    def __init__(self, model: TinyLLaMA, tokenizer: Tokenizer, is_sft: bool = False):
         self.model = model.eval()
         self.tok = tokenizer
         self.device = next(model.parameters()).device
         self.special_ids = set(tokenizer.special_tokens.values())
+        self.is_sft = is_sft  # instruction-tuned: expects the chat template
 
     @classmethod
     def from_checkpoint(cls, path, device="auto"):
@@ -67,14 +69,20 @@ class Generator:
         # torch.compile saves weights as "_orig_mod.<name>"; strip that if present
         state = {k.removeprefix("_orig_mod."): v for k, v in ckpt["model"].items()}
         model.load_state_dict(state)
-        return cls(model.to(device), Tokenizer.load(ckpt["tokenizer"]))
+        return cls(model.to(device), Tokenizer.load(ckpt["tokenizer"]), is_sft=ckpt.get("sft", False))
 
-    def encode_prompt(self, prompt, add_bos=True):
-        """Training data looks like: ...story <eot> story <eot>..., so a story always starts
-        right after <|endoftext|>. Putting it in front of the prompt tells the model
-        "a new story starts here", the same situation it saw in training."""
-        ids = self.tok.encode(prompt)
-        return ([self.tok.eot_id] if add_bos else []) + ids
+    def encode_prompt(self, prompt, chat=False):
+        """chat=False (completion): the model continues `prompt`. Training data looks like
+            ...story <eot> story <eot>..., so a story always starts right after <|endoftext|>;
+            putting it in front tells the model "a new story starts here".
+        chat=True (instruction): `prompt` is an instruction, wrapped in the SAME chat template
+            the SFT data used (tokenizer/chat.py), ending in <|assistant|> so the model replies.
+
+        User text is encoded with encode_ordinary in both modes: typing "<|endoftext|>" or
+        "<|assistant|>" gives plain text, never the real control tokens."""
+        if chat:
+            return prompt_ids(self.tok, prompt)
+        return [self.tok.eot_id] + self.tok.encode_ordinary(prompt)
 
     @torch.inference_mode()
     def stream_ids(self, prompt_ids, params: SamplingParams, result: GenerationResult):
@@ -132,7 +140,7 @@ class Generator:
         if t_first is not None and len(result.token_ids) > 1:
             result.decode_tokens_per_s = (len(result.token_ids) - 1) / (t_end - t_first)
 
-    def stream(self, prompt, params: SamplingParams = None, result: GenerationResult = None):
+    def stream(self, prompt, params: SamplingParams = None, result: GenerationResult = None, chat=False):
         """Yields text pieces as they're generated.
 
         Why not just decode each token on its own? One character can be split across
@@ -143,7 +151,7 @@ class Generator:
         result = result if result is not None else GenerationResult(text="")
         decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
         pieces = []
-        for token in self.stream_ids(self.encode_prompt(prompt), params, result):
+        for token in self.stream_ids(self.encode_prompt(prompt, chat), params, result):
             piece = decoder.decode(self.tok.vocab[token])
             if piece:
                 pieces.append(piece)
@@ -154,9 +162,9 @@ class Generator:
             yield tail
         result.text = "".join(pieces)
 
-    def generate(self, prompt, params: SamplingParams = None) -> GenerationResult:
+    def generate(self, prompt, params: SamplingParams = None, chat=False) -> GenerationResult:
         result = GenerationResult(text="")
-        for _ in self.stream(prompt, params, result):
+        for _ in self.stream(prompt, params, result, chat=chat):
             pass
         return result
 
@@ -174,16 +182,20 @@ def main():
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--num_samples", type=int, default=1)
     parser.add_argument("--device", default="auto")
+    parser.add_argument("--chat", action="store_true",
+                        help="treat --prompt as an instruction (for instruction-tuned checkpoints)")
     args = parser.parse_args()
 
     gen = Generator.from_checkpoint(args.ckpt, args.device)
+    if args.chat and not gen.is_sft:
+        print("warning: this checkpoint was not instruction-tuned; it has never seen the chat format\n")
     params = SamplingParams(max_new_tokens=args.max_new_tokens, temperature=args.temperature, top_k=args.top_k,
                             top_p=args.top_p, min_p=args.min_p, repetition_penalty=args.repetition_penalty,
                             seed=args.seed)
     for i in range(args.num_samples):
         result = GenerationResult(text="")
-        print(args.prompt, end="", flush=True)
-        for piece in gen.stream(args.prompt, params, result):
+        print(f"[instruction] {args.prompt}\n[reply] " if args.chat else args.prompt, end="", flush=True)
+        for piece in gen.stream(args.prompt, params, result, chat=args.chat):
             print(piece, end="", flush=True)
         print(f"\n[{result.stats()}]\n")
         if params.seed is not None:

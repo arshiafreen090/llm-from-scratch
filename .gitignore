@@ -12,6 +12,8 @@ data/**/*.bin
 data/**/*.txt
 data/**/*.json
 data/**/*.pkl
+data/**/*.npy
+data/**/*.jsonl
 checkpoints/*
 !checkpoints/.gitkeep
 *.pt
@@ -27,3 +29,4 @@ experiments/bench/
 .DS_Store
 Thumbs.db
 .vscode/
+experiments/results_sft/

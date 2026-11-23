@@ -78,6 +78,7 @@ class GenerateRequest(BaseModel):
     repetition_penalty: float = Field(1.0, ge=1.0, le=2.0)
     seed: Optional[int] = None
     stream: bool = False
+    chat: bool = False  # true: `prompt` is an instruction, wrapped in the SFT chat template
 
     def sampling_params(self):
         return SamplingParams(max_new_tokens=self.max_new_tokens, temperature=self.temperature,
@@ -102,8 +103,8 @@ def result_payload(result: GenerationResult, queue_ms: float):
 # =============================================================================
 
 class Job:
-    def __init__(self, prompt: str, params: SamplingParams):
-        self.prompt, self.params = prompt, params
+    def __init__(self, prompt: str, params: SamplingParams, chat: bool = False):
+        self.prompt, self.params, self.chat = prompt, params, chat
         self.out = queue.Queue()            # ("token", text) ... then ("done", result) or ("error", msg)
         self.cancelled = threading.Event()  # set by the request side when the client is gone
         self.submitted = time.perf_counter()
@@ -142,7 +143,7 @@ class ModelWorker:
             self.busy = True
             result = GenerationResult(text="")
             try:
-                for piece in self.generator.stream(job.prompt, job.params, result):
+                for piece in self.generator.stream(job.prompt, job.params, result, chat=job.chat):
                     if job.cancelled.is_set():
                         break
                     job.out.put(("token", piece))
@@ -154,10 +155,10 @@ class ModelWorker:
             self.busy = False
             job.out.put(outcome)
 
-    def submit(self, prompt, params) -> Job:
+    def submit(self, prompt, params, chat=False) -> Job:
         if self.jobs.qsize() >= self.max_waiting:
             raise HTTPException(503, f"server busy: {self.jobs.qsize()} requests already waiting")
-        job = Job(prompt, params)
+        job = Job(prompt, params, chat)
         self.jobs.put(job)
         return job
 
@@ -191,16 +192,17 @@ def create_app(generator: Generator = None, load_generator=None, max_waiting: in
         return {"params": gen.model.num_params(), "vocab_size": cfg.vocab_size,
                 "context_length": cfg.block_size, "n_layer": cfg.n_layer, "n_embd": cfg.n_embd,
                 "n_head": cfg.n_head, "n_kv_head": cfg.n_kv_head, "pos_emb": cfg.pos_emb,
-                "norm": cfg.norm, "mlp": cfg.mlp, "device": str(gen.device)}
+                "norm": cfg.norm, "mlp": cfg.mlp, "device": str(gen.device),
+                "instruction_tuned": gen.is_sft}
 
     # Plain `def` endpoints run in FastAPI's thread pool, so waiting on a job here never
     # blocks the server (e.g. /health keeps answering while a generation runs).
     @app.post("/generate")
     def generate(req: GenerateRequest):
-        prompt_len = len(gen.encode_prompt(req.prompt))
+        prompt_len = len(gen.encode_prompt(req.prompt, chat=req.chat))
         if prompt_len >= cfg.block_size:
             raise HTTPException(400, f"prompt is {prompt_len} tokens; the model's context is {cfg.block_size}")
-        job = worker.submit(req.prompt, req.sampling_params())  # 503 here if the queue is full
+        job = worker.submit(req.prompt, req.sampling_params(), req.chat)  # 503 here if the queue is full
 
         if not req.stream:
             try:
