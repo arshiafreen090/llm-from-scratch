@@ -73,7 +73,7 @@ class TinyLLaMA(nn.Module):
 
     # -------------------------------------------------------------------------
 
-    def forward(self, idx, targets=None, kv_caches=None, start_pos=0):
+    def forward(self, idx, targets=None, kv_caches=None, start_pos=0, all_logits=False):
         """
         idx:       (B, T) token ids
         targets:   (B, T) next-token ids, or None. -1 = "don't compute loss here"
@@ -82,6 +82,9 @@ class TinyLLaMA(nn.Module):
         start_pos: position of idx[:, 0] in the full sequence (> 0 when using a cache).
                    An int, or a (B,) tensor giving each row its own position
                    (continuous batching, see inference/batching.py).
+
+        all_logits: without targets, return logits for every position anyway (speculative
+                   decoding checks several drafted tokens in one pass)
 
         Returns (logits, loss). With targets: logits for every position.
         Without: logits for the last position only (that's all generation needs).
@@ -110,6 +113,8 @@ class TinyLLaMA(nn.Module):
             logits = self.lm_head(x)  # (B, T, vocab)
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
             return logits, loss
+        if all_logits:
+            return self.lm_head(x), None
         # inference: skip the (T-1) positions nobody will look at
         return self.lm_head(x[:, [-1], :]), None
 

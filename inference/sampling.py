@@ -86,14 +86,9 @@ def apply_min_p(logits, min_p):
     return logits.masked_fill(probs < threshold, float("-inf"))
 
 
-def sample_next(logits, history, params: SamplingParams, generator=None):
-    """logits: (B, vocab) for the last position; history: (B, T) ids so far. Returns (B, 1)."""
-    logits = logits.float()
-    logits = apply_repetition_penalty(logits, history, params.repetition_penalty)
-
-    if params.temperature == 0:
-        return logits.argmax(dim=-1, keepdim=True)
-
+def _filtered_logits(logits, history, params: SamplingParams):
+    """Steps 1-5: the logits that the final draw is made from (temperature > 0)."""
+    logits = apply_repetition_penalty(logits.float(), history, params.repetition_penalty)
     logits = logits / params.temperature
     if params.top_k is not None:
         logits = apply_top_k(logits, params.top_k)
@@ -101,6 +96,23 @@ def sample_next(logits, history, params: SamplingParams, generator=None):
         logits = apply_top_p(logits, params.top_p)
     if params.min_p is not None:
         logits = apply_min_p(logits, params.min_p)
+    return logits
 
-    probs = F.softmax(logits, dim=-1)
+
+def sample_next(logits, history, params: SamplingParams, generator=None):
+    """logits: (B, vocab) for the last position; history: (B, T) ids so far. Returns (B, 1)."""
+    if params.temperature == 0:
+        penalized = apply_repetition_penalty(logits.float(), history, params.repetition_penalty)
+        return penalized.argmax(dim=-1, keepdim=True)
+    probs = F.softmax(_filtered_logits(logits, history, params), dim=-1)
     return torch.multinomial(probs, num_samples=1, generator=generator)
+
+
+def token_probs(logits, history, params: SamplingParams):
+    """The exact distribution sample_next draws from, as probabilities (B, vocab).
+    Greedy (temperature 0) is a distribution too: all the mass on the argmax.
+    Speculative decoding (inference/speculative.py) needs these to compare two models."""
+    if params.temperature == 0:
+        penalized = apply_repetition_penalty(logits.float(), history, params.repetition_penalty)
+        return F.one_hot(penalized.argmax(dim=-1), logits.size(-1)).float()
+    return F.softmax(_filtered_logits(logits, history, params), dim=-1)

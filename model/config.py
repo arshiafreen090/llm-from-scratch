@@ -58,6 +58,9 @@ SIZES = {
     "small": dict(n_layer=6, n_head=6, n_kv_head=2, n_embd=384),
     # the final model (~27M params)
     "base":  dict(n_layer=8, n_head=8, n_kv_head=4, n_embd=512),
+    # draft model for speculative decoding (~2.5M params): as few layers as possible, since
+    # on a CPU each layer costs a fixed overhead per step whatever its width
+    "draft": dict(n_layer=2, n_head=4, n_kv_head=2, n_embd=256),
 }
 
 # ---- architectures ------------------------------------------------------------------

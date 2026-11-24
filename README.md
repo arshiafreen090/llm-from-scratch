@@ -10,7 +10,7 @@ A small LLaMA-style language model built from scratch: pretrained, instruction-t
 |---|---|---|
 | 1. Pretrain | LLaMA architecture (RoPE, RMSNorm, SwiGLU, GQA) + custom BPE tokenizer, trained on TinyStories, with controlled ablations | ✅ |
 | 2. Instruction-tune | SFT so the model follows commands ("write a story about X using words Y, Z") | ✅ |
-| 3. Serve fast | KV cache, sampling, continuous batching, streaming FastAPI, INT8 quantization, Gradio demo ✅ · speculative decoding ⏳ | 🔨 |
+| 3. Serve fast | KV cache, sampling, continuous batching, streaming FastAPI, INT8 quantization, Gradio demo, speculative decoding | ✅ |
 
 ## Project layout
 
@@ -102,6 +102,12 @@ python -m inference.quantize --ckpt checkpoints/sft-small-llama-s1.pt     # -> s
 python -m serve.api --ckpt checkpoints/sft-small-llama-s1-int8.pt
 python -m inference.generate --ckpt checkpoints/<run>.pt --quant int8 --prompt "Once upon a time"
 python -m inference.bench_quant --ckpt checkpoints/small-llama-s1.pt      # float32 vs int8: size, quality, speed
+
+# speculative decoding: a 2.5M draft model guesses, the real model checks (~40 min to train the draft on CPU)
+python -m train.pretrain --size draft --token_budget 24000000 --batch_size 32 --grad_accum 1 \
+       --out_dir experiments/results_draft --run_name draft-llama
+python -m inference.speculative --ckpt checkpoints/small-llama-s1.pt --draft checkpoints/draft-llama.pt
+python -m inference.bench_speculative --ckpt checkpoints/small-llama-s1.pt --draft checkpoints/draft-llama.pt
 ```
 
 ### Continuous batching
@@ -174,6 +180,48 @@ which draws different random numbers from the same seed).
 - **Quantizing the activations doesn't pay off on this CPU.** It costs 100× more loss (+0.010 vs +0.0001),
   and PyTorch's ARM int8 kernel is slow for multi-row inputs: prefill is 3.5× slower and batched
   throughput 26% lower. Single-request decode is a tie within noise. For serving, use `int8`.
+
+### Speculative decoding
+
+[inference/speculative.py](inference/speculative.py): a cheap drafter guesses the next k tokens, and the
+model checks all of them in **one** forward pass. Each round keeps every guess up to the first
+disagreement, plus one token from the model itself. On a CPU this pays off because a pass over 5 tokens
+costs about the same as a pass over 1 (3.8 ms vs 3.5 ms): small models are limited by per-layer overhead,
+not arithmetic.
+
+The accept/resample rule (Leviathan et al. 2023) keeps the output **exactly** the target model's:
+- a guess x is accepted with probability min(1, p(x)/q(x)), where p is the target model's distribution
+  and q the drafter's
+- on a rejection, the replacement token is drawn from the leftover max(0, p − q)
+
+With greedy decoding this means token-for-token the same text as plain greedy decoding: tested, and
+identical in all 18 benchmark generations. With sampling it means the same distribution, which a
+100k-sample test checks.
+
+Two drafters: a **2.5M-parameter draft model** (2 layers × 256, val loss 2.31 vs the target's 1.71,
+trained in 42 minutes on the laptop CPU), and an **n-gram drafter** that needs no model. The n-gram
+drafter proposes whatever followed the last few tokens the previous time they appeared.
+
+Mini-LLaMA (11M), 200-token generations, laptop CPU. Speedup vs plain decoding in the same run; k=2 was
+measured in two separate runs, and runs differ by about ±0.1×:
+
+| drafter | tokens per model pass | guesses accepted | speedup, greedy | speedup, temperature 0.7 |
+|---|---|---|---|---|
+| n-gram, k=4 | 1.1–1.2 | 15–30% | 1.11–1.14× | 0.96–1.05× |
+| draft model, k=1 | 1.7 | 71% | 1.26× | 1.32× |
+| **draft model, k=2** | **2.2** | **62%** | **1.34–1.37×** | **1.19–1.30×** |
+| draft model, k=3 | 2.6 | 52% | 1.42× | 1.23× |
+| draft model, k=4 | 2.8 | 46% | 1.17× | 0.93× |
+| draft model, k=6 | 3.1 | 35% | 0.98× | 0.79× |
+
+- **About 1.3–1.4× faster at k = 2–3**, with exactly the same output. k=2 is the default.
+- **Longer drafts get slower.** Each extra guess costs a draft step (~0.3× a model step) but is
+  accepted less often, since it only counts if every guess before it was right. By k=4 the drafting
+  costs more than it saves.
+- **The n-gram drafter is nearly free but rarely right** on stories. It helps a little with greedy
+  decoding and nothing with sampling, where a fixed guess is accepted only with probability p(x).
+- **The limit here is the draft model's cost.** On a GPU, a 7B model's step costs far more than a
+  small draft's, which is why the papers report 2–3× there.
 
 ## Results
 
