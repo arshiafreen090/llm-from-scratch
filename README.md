@@ -10,7 +10,7 @@ A small LLaMA-style language model built from scratch: pretrained, instruction-t
 |---|---|---|
 | 1. Pretrain | LLaMA architecture (RoPE, RMSNorm, SwiGLU, GQA) + custom BPE tokenizer, trained on TinyStories, with controlled ablations | ✅ |
 | 2. Instruction-tune | SFT so the model follows commands ("write a story about X using words Y, Z") | ✅ |
-| 3. Serve fast | KV cache, sampling, continuous batching, streaming FastAPI, INT8 quantization ✅ · speculative decoding, Gradio demo ⏳ | 🔨 |
+| 3. Serve fast | KV cache, sampling, continuous batching, streaming FastAPI, INT8 quantization, Gradio demo ✅ · speculative decoding ⏳ | 🔨 |
 
 ## Project layout
 
@@ -81,6 +81,10 @@ chance level.
 ## Generating and serving
 
 ```bash
+# web demo: type an instruction, watch the story stream in, see which required words it used
+python -m inference.quantize --ckpt checkpoints/sft-small-llama-s1.pt    # once: the 11 MB int8 model
+python -m serve.demo                                                    # http://127.0.0.1:7860
+
 # generate from a checkpoint (streams tokens, prints TTFT and decode speed)
 python -m inference.generate --ckpt checkpoints/<run>.pt --prompt "Once upon a time" --top_p 0.9
 
@@ -120,6 +124,21 @@ exactly the tokens they would produce alone; `tests/test_batching.py` checks thi
 | 4 req/s (Poisson) | 4 | keeps up | 65 ms | 1.1 s |
 
 One decode step costs 5.4 ms for 1 row and 16.5 ms for 16 rows: 16× the tokens for about 3× the time.
+
+### Web demo
+
+[serve/demo.py](serve/demo.py) is a Gradio page: an instruction box with examples, sampling settings,
+the story streaming in, a ✅/❌ check of each required word, and the speed and seed of every
+generation. It runs the model through the same `ModelWorker` as the HTTP API, so several visitors are
+decoded together with continuous batching.
+
+Building it turned up a CPU performance trap. Called from Gradio's request threads, the model generated
+at **18 tokens/s instead of ~190**. PyTorch splits each CPU op across a team of OpenMP threads, and every
+Python thread that calls PyTorch gets its own team. With two teams there are more threads than cores,
+so OpenMP stops busy-waiting between ops and sleeps instead, and waking up for each of the thousands of
+tiny ops per token dominates. The fix is the rule the API server already followed: every model call
+happens on one thread. With that, and one warm-up generation at startup, the demo serves
+**~120–135 tokens/s** on the laptop CPU.
 
 ### INT8 quantization
 
