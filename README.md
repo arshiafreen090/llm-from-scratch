@@ -195,8 +195,9 @@ system prompts are accepted, since clients send them, but not used.
    and secrets**.
 
 A free Space has 2 vCPUs and goes to sleep after 48 hours without visitors; the first visit after that
-waits about a minute while it wakes up. On 2 vCPUs, expect roughly 50–100 tokens/s for one user and a few
-hundred tokens/s in total across a full batch.
+waits while it starts up again. Speed: limited to 2 cores of the laptop (fresh clone, `OMP_NUM_THREADS=2`),
+the server ran at **125–145 tokens/s for one request and ~600 tokens/s in total for 8 at once**. A Space's
+shared vCPUs are probably slower, so treat that as an upper bound.
 
 **Any machine with Docker**: `docker build -t tinyllama . && docker run -p 8000:7860 tinyllama`. Add
 `-e TINYLLAMA_API_KEYS=...` to require keys, and set `OMP_NUM_THREADS` to the number of CPUs the
