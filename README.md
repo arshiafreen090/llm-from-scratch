@@ -13,10 +13,27 @@ Everything runs on free hardware: Kaggle T4 GPUs for training, a laptop CPU for 
   (chance). [→ results](#part-2-does-instruction-tuning-work)
 - **Serving**: continuous batching for **5× throughput** with output identical to running each request alone;
   INT8 weights **4× smaller** at no measurable quality loss; speculative decoding **1.3–1.4× faster** with
-  exactly the same output; a streaming API and a [web demo](#web-demo).
-  [→ batching](#continuous-batching) · [→ INT8](#int8-quantization) · [→ speculative](#speculative-decoding)
+  exactly the same output; a chat web UI and an **OpenAI-compatible streaming API** with API keys and rate
+  limits. [→ batching](#continuous-batching) · [→ INT8](#int8-quantization) ·
+  [→ speculative](#speculative-decoding) · [→ UI and API](#web-ui-and-openai-compatible-api)
 - **Debugging finds**: a PyTorch threading trap that made the demo 10× slower, and why INT8 doesn't speed
   up a model that fits in the CPU cache.
+
+## Try it in 2 minutes
+
+The trained models are in the [models-v1 release](https://github.com/arshiafreen090/llm-from-scratch/releases/tag/models-v1),
+so nothing needs training:
+
+```bash
+git clone https://github.com/arshiafreen090/llm-from-scratch.git && cd llm-from-scratch
+python3 -m venv .venv && source .venv/bin/activate
+pip install torch --index-url https://download.pytorch.org/whl/cpu && pip install -r requirements-serve.txt
+mkdir -p checkpoints && curl -L -o checkpoints/sft-small-llama-s1-int8.pt \
+  https://github.com/arshiafreen090/llm-from-scratch/releases/download/models-v1/sft-small-llama-s1-int8.pt
+python -m serve.api --ckpt checkpoints/sft-small-llama-s1-int8.pt     # open http://localhost:8000
+```
+
+Or with Docker: `docker build -t tinyllama . && docker run -p 8000:7860 tinyllama`.
 
 ## The three parts
 
@@ -24,7 +41,7 @@ Everything runs on free hardware: Kaggle T4 GPUs for training, a laptop CPU for 
 |---|---|---|
 | 1. Pretrain | LLaMA architecture (RoPE, RMSNorm, SwiGLU, GQA) + custom BPE tokenizer, trained on TinyStories, with controlled ablations | ✅ |
 | 2. Instruction-tune | SFT so the model follows commands ("write a story about X using words Y, Z") | ✅ |
-| 3. Serve fast | KV cache, sampling, continuous batching, streaming FastAPI, INT8 quantization, Gradio demo, speculative decoding | ✅ |
+| 3. Serve fast | KV cache, sampling, continuous batching, INT8 quantization, speculative decoding, chat web UI, OpenAI-compatible streaming API with keys and rate limits, Docker deploy | ✅ |
 
 ## Project layout
 
@@ -34,7 +51,8 @@ data/          dataset download + tokenization scripts (outputs .bin files)
 model/         config, layers (RoPE, RMSNorm, SwiGLU, GQA), full model
 train/         pretraining and SFT training loops
 inference/     generation (KV cache + sampling), continuous batching, quantization, speculative decoding
-serve/         FastAPI streaming server, Gradio demo
+serve/         FastAPI server: chat web UI (serve/web/), OpenAI-compatible API, API keys, Gradio demo
+deploy/        Hugging Face Space template
 experiments/   ablations, benchmarks, plots
 checkpoints/   saved model weights (not in git)
 notebooks/     Kaggle notebooks used for GPU training
@@ -96,15 +114,18 @@ chance level.
 ## Generating and serving
 
 ```bash
-# web demo: type an instruction, watch the story stream in, see which required words it used
+# the server: chat UI at http://localhost:8000, OpenAI-compatible API at /v1, docs at /docs
 python -m inference.quantize --ckpt checkpoints/sft-small-llama-s1.pt    # once: the 11 MB int8 model
+python -m serve.api --ckpt checkpoints/sft-small-llama-s1-int8.pt --port 8000 --max_batch 8
+TINYLLAMA_API_KEYS=$(python -m serve.auth new-key) python -m serve.api --ckpt ...   # require an API key
+
+# the earlier Gradio demo (same model, simpler page)
 python -m serve.demo                                                    # http://127.0.0.1:7860
 
 # generate from a checkpoint (streams tokens, prints TTFT and decode speed)
 python -m inference.generate --ckpt checkpoints/<run>.pt --prompt "Once upon a time" --top_p 0.9
 
-# HTTP API with Server-Sent Events streaming and continuous batching; docs at http://localhost:8000/docs
-python -m serve.api --ckpt checkpoints/<run>.pt --port 8000 --max_batch 8
+# the original simple endpoint, Server-Sent Events streaming
 curl -N -X POST localhost:8000/generate -H "Content-Type: application/json" \
      -d '{"prompt": "Once upon a time", "stream": true}'
 
@@ -124,6 +145,62 @@ python -m train.pretrain --size draft --token_budget 24000000 --batch_size 32 --
 python -m inference.speculative --ckpt checkpoints/small-llama-s1.pt --draft checkpoints/draft-llama.pt
 python -m inference.bench_speculative --ckpt checkpoints/small-llama-s1.pt --draft checkpoints/draft-llama.pt
 ```
+
+### Web UI and OpenAI-compatible API
+
+`python -m serve.api` serves a chat page at `/` ([serve/web/](serve/web/): plain HTML, CSS and JavaScript,
+no build step). It has a sidebar with chat history and search (saved in the browser), streaming replies
+with a stop button, a ✓/✗ check of each required word, the speed and seed of every reply, sampling
+settings, and light and dark themes. It works on phones too.
+
+The page talks to the same endpoint any client can use, **`POST /v1/chat/completions`**, which follows the
+OpenAI chat API ([serve/openai_compat.py](serve/openai_compat.py)). So the official OpenAI libraries work
+just by changing the base URL. Tested with `openai` 3.58, streaming and not:
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://localhost:8000/v1", api_key="sk-tl-...")   # any text if keys are off
+stream = client.chat.completions.create(
+    model="sft-small-llama-s1-int8", stream=True,
+    messages=[{"role": "user", "content": "Write a story. Use the words: rain, ball, happy."}])
+for chunk in stream:
+    if chunk.choices:
+        print(chunk.choices[0].delta.content or "", end="", flush=True)
+```
+
+The model was tuned on single instructions, so it answers the last user message. Earlier messages and
+system prompts are accepted, since clients send them, but not used.
+
+**API keys and rate limits** ([serve/auth.py](serve/auth.py)):
+- The server owner creates keys with `python -m serve.auth new-key` and passes them as the secret
+  `TINYLLAMA_API_KEYS` (comma-separated). Clients send them as `Authorization: Bearer <key>`.
+- The server stores only SHA-256 hashes and compares them in constant time.
+- Every key, or every IP address when no keys are set, gets a token-bucket rate limit (`--rate_limit`,
+  default 30 requests/min). Over the limit, clients get HTTP 429 with `Retry-After`.
+- When the 8 batch rows and the waiting queue are all full, new requests get 503 instead of piling up.
+- Self-service sign-up, where strangers create their own keys, is deliberately not built. It needs
+  accounts, a database, email checks and abuse handling, and that's far more infrastructure than one CPU
+  serving an 11M model warrants.
+
+### Deploying it
+
+**Hugging Face Spaces** (free, a public URL like `https://<you>-tinyllama.hf.space`):
+1. Sign in at huggingface.co, then go to **New Space**: pick a name, choose **Docker** → **Blank**,
+   and keep the free CPU.
+2. Upload the two files in [deploy/huggingface/](deploy/huggingface/) (`Dockerfile`, `README.md`) under
+   **Files → Add file → Upload files**. The Space builds itself: it pulls the code from this repo and the
+   model from the release, in about 5 minutes.
+3. Optional: to require API keys, add a secret named `TINYLLAMA_API_KEYS` under **Settings → Variables
+   and secrets**.
+
+A free Space has 2 vCPUs and goes to sleep after 48 hours without visitors; the first visit after that
+waits about a minute while it wakes up. On 2 vCPUs, expect roughly 50–100 tokens/s for one user and a few
+hundred tokens/s in total across a full batch.
+
+**Any machine with Docker**: `docker build -t tinyllama . && docker run -p 8000:7860 tinyllama`. Add
+`-e TINYLLAMA_API_KEYS=...` to require keys, and set `OMP_NUM_THREADS` to the number of CPUs the
+container gets.
 
 ### Continuous batching
 

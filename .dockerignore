@@ -1,0 +1,12 @@
+# keep the build context small: the image copies only tokenizer/, model/, inference/, serve/
+.git
+.venv
+venv
+.claude
+nanoGPT
+data
+checkpoints
+experiments
+notebooks
+tests
+**/__pycache__

@@ -1,0 +1,7 @@
+# Just what the web UI + API server need (no training, data or plotting packages).
+# Install PyTorch first, the CPU build is enough:
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+torch>=2.5
+regex           # the tokenizer's pre-tokenization pattern
+fastapi
+uvicorn[standard]

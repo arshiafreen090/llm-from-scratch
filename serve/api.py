@@ -1,18 +1,20 @@
 """
-HTTP API for the model, with token streaming over Server-Sent Events (SSE).
+The model server: a chat web UI, an OpenAI-compatible API, and token streaming over
+Server-Sent Events (SSE).
 
 Start it (from the project root):
-    python -m serve.api --ckpt checkpoints/smoke/smoke-tiny-llama.pt --port 8000
+    python -m serve.api --ckpt checkpoints/sft-small-llama-s1-int8.pt --port 8000
 
 Then:
-    curl localhost:8000/health
-    curl -X POST localhost:8000/generate -H "Content-Type: application/json" \
-         -d '{"prompt": "Once upon a time", "max_new_tokens": 50}'
-    # streaming (-N turns off curl's buffering so tokens appear as they arrive)
+    http://localhost:8000                 the chat UI (serve/web/)
+    http://localhost:8000/docs            interactive docs for every endpoint
+    POST /v1/chat/completions             OpenAI-compatible, stream or not (serve/openai_compat.py)
+    GET  /v1/models
+    POST /generate                        the original simple endpoint:
     curl -N -X POST localhost:8000/generate -H "Content-Type: application/json" \
-         -d '{"prompt": "Once upon a time", "stream": true}'
+         -d '{"prompt": "Once upon a time", "stream": true}'    # -N: show tokens as they arrive
 
-Interactive docs (try requests from the browser): http://localhost:8000/docs
+API keys and rate limits: serve/auth.py (TINYLLAMA_API_KEYS=key1,key2 to require keys).
 
 Architecture
 ------------
@@ -60,19 +62,25 @@ Request isolation (what one request can and can't affect in another)
 
 import argparse
 import json
+import os
 import queue
 import threading
 import time
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi import Depends, FastAPI, HTTPException
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from inference.batching import BatchEngine, Sequence
 from inference.generate import GenerationResult, Generator
 from inference.quantize import MODES as QUANT_MODES
 from inference.sampling import SamplingParams
+from serve.auth import ENV_VAR as KEYS_ENV_VAR, APIError, Guard, RateLimiter, load_key_hashes
+from serve.openai_compat import add_openai_routes
+
+WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
 
 
 class GenerateRequest(BaseModel):
@@ -201,16 +209,42 @@ class ModelWorker:
 # =============================================================================
 
 def create_app(generator: Generator = None, load_generator=None, max_waiting: int = 16,
-               timeout_s: float = 300.0, max_batch: int = 8, warm_up: bool = False) -> FastAPI:
+               timeout_s: float = 300.0, max_batch: int = 8, warm_up: bool = False,
+               model_name: str = "tinyllama", guard: Guard = None, web_ui: bool = True) -> FastAPI:
     """Pass either a ready `generator` (tests) or a `load_generator` function (real server,
     so the model is created on the worker thread). max_batch=1 turns batching off.
-    warm_up=True runs one short generation before the app is returned."""
+    warm_up=True runs one short generation before the app is returned.
+    guard: API keys and rate limits (serve/auth.py); None = open, no limits.
+    web_ui: serve the chat page (serve/web/) at "/"."""
     worker = ModelWorker(load_generator or (lambda: generator), max_waiting, max_batch)
     if warm_up:
         worker.warm_up()
     gen = worker.generator
     cfg = gen.model.cfg
-    app = FastAPI(title="llm-from-scratch", description="A small LLaMA-style model trained from scratch.")
+    guard = guard or Guard()
+    app = FastAPI(title="llm-from-scratch", description="A small LLaMA-style model trained from scratch. "
+                  "OpenAI-compatible endpoints under /v1.")
+
+    @app.exception_handler(APIError)
+    def api_error(request, exc: APIError):
+        return JSONResponse(exc.body(), status_code=exc.status, headers=exc.headers)
+
+    add_openai_routes(app, worker, guard, model_name, timeout_s)
+    if web_ui:
+        app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
+
+        @app.middleware("http")
+        async def revalidate_ui(request, call_next):
+            # "no-cache" = the browser may keep a copy but must check it's current (a cheap
+            # "304 Not Modified"), so a redeployed page never runs yesterday's JavaScript
+            response = await call_next(request)
+            if request.url.path == "/" or request.url.path.startswith("/static/"):
+                response.headers["Cache-Control"] = "no-cache"
+            return response
+
+        @app.get("/", include_in_schema=False)
+        def page():
+            return FileResponse(os.path.join(WEB_DIR, "index.html"))
 
     def next_event(job):
         try:
@@ -230,12 +264,13 @@ def create_app(generator: Generator = None, load_generator=None, max_waiting: in
                 "context_length": cfg.block_size, "n_layer": cfg.n_layer, "n_embd": cfg.n_embd,
                 "n_head": cfg.n_head, "n_kv_head": cfg.n_kv_head, "pos_emb": cfg.pos_emb,
                 "norm": cfg.norm, "mlp": cfg.mlp, "device": str(gen.device),
-                "quant": getattr(gen.model, "quant", None), "instruction_tuned": gen.is_sft}
+                "quant": getattr(gen.model, "quant", None), "instruction_tuned": gen.is_sft,
+                "model": model_name, "api_key_required": guard.keys_required}
 
     # Plain `def` endpoints run in FastAPI's thread pool, so waiting on a job here never
     # blocks the server (e.g. /health keeps answering while a generation runs).
     @app.post("/generate")
-    def generate(req: GenerateRequest):
+    def generate(req: GenerateRequest, client: str = Depends(guard)):
         prompt_ids = gen.encode_prompt(req.prompt, chat=req.chat)
         if len(prompt_ids) >= cfg.block_size:
             raise HTTPException(400, f"prompt is {len(prompt_ids)} tokens; the model's context is {cfg.block_size}")
@@ -288,11 +323,23 @@ def main():
     parser.add_argument("--quant", default=None, choices=QUANT_MODES,
                         help="int8 weights. int8-dynamic is faster on CPU, but a request's output can then "
                              "depend on the others in its batch (see inference/quantize.py)")
+    parser.add_argument("--model_name", default=None, help="name shown in /v1/models (default: from --ckpt)")
+    parser.add_argument("--api_keys_file", default=None,
+                        help=f"one API key per line; also read from ${KEYS_ENV_VAR}. No keys = open API")
+    parser.add_argument("--rate_limit", type=int, default=30, help="requests per minute per key / IP (0 = off)")
+    parser.add_argument("--trust_proxy", action="store_true",
+                        help="take the client IP from X-Forwarded-For (behind a proxy, e.g. Hugging Face Spaces)")
     args = parser.parse_args()
 
     import uvicorn
+    keys = load_key_hashes(args.api_keys_file)
+    guard = Guard(keys, RateLimiter(args.rate_limit) if args.rate_limit else None, args.trust_proxy)
+    name = args.model_name or os.path.basename(args.ckpt).removesuffix(".pt")
+    print(f"API keys: {f'{len(keys)} configured' if keys else 'none (open API)'}; "
+          f"rate limit: {args.rate_limit or 'off'} requests/min per {'key' if keys else 'IP'}")
     app = create_app(load_generator=lambda: Generator.from_checkpoint(args.ckpt, args.device, args.quant),
-                     max_waiting=args.max_waiting, max_batch=args.max_batch, warm_up=True)
+                     max_waiting=args.max_waiting, max_batch=args.max_batch, warm_up=True,
+                     model_name=name, guard=guard)
     uvicorn.run(app, host=args.host, port=args.port)
 
 
