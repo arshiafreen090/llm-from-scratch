@@ -223,6 +223,48 @@ measured in two separate runs, and runs differ by about ±0.1×:
 - **The limit here is the draft model's cost.** On a GPU, a 7B model's step costs far more than a
   small draft's, which is why the papers report 2–3× there.
 
+### Which sampling settings write the best stories?
+
+Greedy decoding is used only in tests and benchmarks: it's deterministic, so it can check that int8 or
+speculative output is *exactly* unchanged. Real generation samples. To choose how,
+[experiments/sampling_sweep.py](experiments/sampling_sweep.py) gave the SFT model the same 200 held-out
+instructions with the same seeds under 11 settings, scoring each on:
+
+- **instruction following:** required words used
+- **repetition:** share of a story's 4-word sequences it already used earlier
+- **diversity:** distinct 3-word sequences across all stories
+- **fluency:** perplexity under a separate *judge* model, the pretrained mini-LLaMA, which never saw instructions
+
+| setting | required words used | all 3 words | repetition ↓ | diversity ↑ | judge perplexity ↓ | stopped on its own |
+|---|---|---|---|---|---|---|
+| greedy | 52.5% | 16.5% | 5.5% | 0.510 | 2.07 | 96% |
+| T=0.5 | 53.8% | 13.5% | 2.0% | 0.593 | 2.38 | 98% |
+| T=0.7 | 52.5% | 12.5% | 1.6% | 0.658 | 2.91 | 96% |
+| T=0.7, top-p 0.9 *(the default)* | 52.8% | 14.5% | 2.0% | 0.611 | 2.44 | 97% |
+| T=1.0 | 44.7% | 9.5% | 0.5% | 0.799 | 6.79 | 93% |
+| T=1.0, top-k 50 | 47.7% | 10.5% | 0.6% | 0.775 | 5.24 | 93% |
+| T=1.0, top-p 0.9 | 47.5% | 9.5% | 0.8% | 0.732 | 3.87 | 96% |
+| T=1.0, min-p 0.1 | 53.7% | 11.5% | 1.3% | 0.659 | 2.82 | 97% |
+| T=1.0, top-k 50, top-p 0.9 | 50.0% | 11.0% | 1.0% | 0.712 | 3.40 | 96% |
+| T=1.3, top-p 0.9 | 35.5% | 4.0% | 0.1% | 0.883 | 16.47 | 88% |
+| T=1.3 | 28.3% | 1.0% | 0.1% | 0.933 | 53.10 | 84% |
+
+![diversity vs fluency of each sampling setting](experiments/sampling_sweep.png)
+
+With 200 instructions, word inclusion has a standard error of about ±2.5 points, so 52% vs 54% is a tie.
+
+- **Every setting lies on one curve.** More variety always costs fluency. The knobs choose a point on the
+  curve; none of them moves the curve. T=0.7 and T=1.0 + min-p 0.1 (points 3 and 8) land on the same spot.
+- **Greedy is the worst for repetition and variety:** 3× the repeated phrases of T=0.7, and the least varied
+  stories. Its very low perplexity means bland, not better.
+- **Instruction following holds steady (52–54%) up to about diversity 0.66,** then drops as text gets
+  random: 45% at T=1.0 untruncated, 28% at T=1.3.
+- **Truncation matters most at high temperature.** At T=1.3, top-p 0.9 cuts judge perplexity from 53
+  (word salad) to 16. At T=1.0 the adaptive cut-offs beat a fixed one in fluency (min-p 2.8, top-p 3.9,
+  top-k 5.2), and min-p also keeps instruction following at 54%, vs 48% for the other two.
+- **The default (T=0.7, top-p 0.9) sits in the good region.** T=1.0 + min-p 0.1 is an equal alternative
+  with a bit more variety.
+
 ## Results
 
 ### Part 1: which LLaMA changes matter?

@@ -1,0 +1,152 @@
+{
+  "args": {
+    "ckpt": "checkpoints/sft-small-llama-s1.pt",
+    "judge": "checkpoints/small-llama-s1.pt",
+    "examples": "data/tinystories_sft/val_examples.jsonl",
+    "n": 200,
+    "max_new_tokens": 300,
+    "max_batch": 16,
+    "out": "experiments/sampling_sweep.json"
+  },
+  "results": [
+    {
+      "setting": "greedy",
+      "temperature": 0,
+      "word_inclusion": 0.525,
+      "all_words": 0.165,
+      "repetition": 0.05514880169110235,
+      "diversity": 0.5097315907813378,
+      "judge_ppl": 2.066734399061128,
+      "stopped": 0.96,
+      "mean_tokens": 178.31,
+      "example": "Tom and Lily were playing in the forest. They liked to look for bugs and flowers. They saw a big tree with many leaves. They wanted to climb the tree and see what was on the other side.\n\n\"Let's go, Tom!\" Lily said. \"Maybe we can find a cozy place to hide.\"\n\n\"OK, Lily!\" Tom said. \"But be careful. The tree is very high and fast.\"\n\nThey climbed the tree and looked around. They saw a big tree with a hole in it. They thought it was a safe place to hide. They climbed the tree and peeked inside.\n\n\"Wow, look at that tree!\" Tom said. \"It is so big and strong!\"\n\n\"I want to see it!\" Lily said. \"Maybe it is a secret place. Maybe it is a secret place.\"\n\nThey climbed down the tree and ran to the tree. They saw a big tree with a hole in it. They wondered what was inside.\n\n\"Maybe it is a secret place,\" Tom said. \"Maybe it is a secret place.\"\n\n\"Maybe it is a secret place,\" Lily said. \"Maybe it is a secret place.\"\n\nThey climbed down the tree and ran to the tree. They were very happy. They did not see the big hole in the tree. They did not see the hole in the ground. They did not see the hole in the hole. They did not see the hole. They did not see the hole. They did not see the hole. They did not see the hole."
+    },
+    {
+      "setting": "T=0.5",
+      "temperature": 0.5,
+      "word_inclusion": 0.5383333333333333,
+      "all_words": 0.135,
+      "repetition": 0.01980925185296227,
+      "diversity": 0.5933748564668221,
+      "judge_ppl": 2.3765226581797028,
+      "stopped": 0.975,
+      "mean_tokens": 178.73,
+      "example": "Tom and Lily are friends. They like to play in the woods. One day, they see a big house with a lot of trees and flowers. They want to go inside and see what is there.\n\nThey go to the house and see a big house. The house has a lot of doors and doors. Tom and Lily are curious. They want to see what is inside the house.\n\nThey open the door and go inside. They see a lot of dust and dust. They see a gray house and a big house. They are very happy. They say hello to the house and the house. They say hello to the house and the house.\n\nBut the house is not a place. It is a big house. It has a door and a window. It is locked. Tom and Lily are scared. They do not know what to do. They do not know what to do.\n\nThey hear a loud noise. It is a big, scary monster. It has sharp teeth and claws. It is angry. It sees Tom and Lily and their toys. It thinks they are playing in the woods. It runs towards them and growls.\n\nTom and Lily are scared. They scream and run away. They run to the door and call for help. But no one hears them. They are stuck in the house. They are stuck in the house. They are trapped in the house.\n\nThey call for help. But no one hears them. They are stuck in the"
+    },
+    {
+      "setting": "T=0.7",
+      "temperature": 0.7,
+      "word_inclusion": 0.525,
+      "all_words": 0.125,
+      "repetition": 0.016086743267741666,
+      "diversity": 0.6583224422774036,
+      "judge_ppl": 2.910845112151074,
+      "stopped": 0.965,
+      "mean_tokens": 185.485,
+      "example": "Tom and Lily are friends. They like to play in the woods. One day, they find a big tree with many leaves. They want to climb the tree and see the birds and the bugs.\n\n\"Let's go, Tom!\" Lily says. \"Maybe we can find a new home.\"\n\n\"OK, but be careful. The tree has a big hole and a hole.\" Tom says. \"Let's go see it.\"\n\nThey climb the tree and see a lot of birds. They are smart and kind. They have fun in the forest.\n\nBut then, Tom and Lily see a big hole in the ground. They think it is a house. They want to see what is inside.\n\n\"Come on, Lily, let's go!\" Tom says. He runs to the hole.\n\n\"No, Tom, it is dangerous. I don't want to go in. I want to go in the hole,\" Lily says. She is scared.\n\n\"But I want to see the tree. Maybe there is something fun there,\" Tom says. He stops his bike and tries to climb the hole.\n\nLily is not scared. She is brave. She smiles and says, \"Don't be scared, Tom. I am here. You are brave. I will stay with you. I will keep you safe.\"\n\nTom smiles too. He says, \"Thank you, Lily. You are very pretty. How about we go in the hole? We can find something new.\"\n\nLily and Tom go inside the hole. They see a"
+    },
+    {
+      "setting": "T=0.7, top-p 0.9",
+      "temperature": 0.7,
+      "top_p": 0.9,
+      "word_inclusion": 0.5283333333333333,
+      "all_words": 0.145,
+      "repetition": 0.01969362712538586,
+      "diversity": 0.6105817539239805,
+      "judge_ppl": 2.4356646694739847,
+      "stopped": 0.97,
+      "mean_tokens": 179.4,
+      "example": "Tom and Lily are friends. They like to play in the forest. One day, they see a big hole in the ground. They want to see what is inside.\n\n\"Let's go and see!\" Tom says. \"Maybe we can find a home or a treasure.\"\n\n\"OK!\" Lily says. \"But be careful. There might be treasure there.\"\n\nThey crawl through the hole. They see a big house. It is old and dusty. They are curious. They want to see what is inside.\n\nThey go to the house. They open the door. They see a man. The man is the house. He is angry. He has a big beard. He shouts at Tom and Lily.\n\n\"Hey, you two! What are you doing in my house? I have a bad house. You are in trouble!\" he says.\n\nTom and Lily are scared. They do not know the man. They do not know what to do. They are afraid.\n\nThey hug each other. They say, \"Sorry, sir. We were curious. We are sorry.\"\n\nThe man looks at them. He is not angry. He is friendly. He says, \"I know you are curious, but you should not escape. You should stay here. You should not escape.\"\n\nTom and Lily nod. They are sorry. They say, \"We are sorry, sir. We were curious. We did not know the man was here.\"\n\nThey go back to the hole. They hide under"
+    },
+    {
+      "setting": "T=1.0 (pure sampling)",
+      "temperature": 1.0,
+      "word_inclusion": 0.44666666666666666,
+      "all_words": 0.095,
+      "repetition": 0.004771348342461711,
+      "diversity": 0.7985933922145895,
+      "judge_ppl": 6.7917267275219615,
+      "stopped": 0.93,
+      "mean_tokens": 192.96,
+      "example": "Tom and Lily are friends. They like to play in the woods. One day, they find a big hole in the woods. They want to see what is inside.\n\n\"Let's go, Tom!\" Lily says. \"Maybe we can find a home here.\"\n\n\"OK, Lily,\" Tom says. They run towards the hole. They walk into the hole. They see many ants inside. Tom is happy. He likes to jump in the hole.\n\nBut then, they feel cold. Their bed is gray. It starts to snow. They look at the trees and the sand. They hear a splash. They laugh.\n\n\"Tom, Lily, where are you?\" Tom asks. He is scared. He has a big cut on his throat. He wants to hide.\n\n\"See, Tom, the close house is gone. We cannot in the hole. You have to stay here until I go to the house,\" Lily says. She is sad too.\n\n\"Okay, Lily, I am not here. Will we come back?\" Tom says. He is cold. He is not cold. He is afraid.\n\nLily and Tom look for the hole. They hear a loud roar. They do not see the day. They hope they will stay home. They hope they can still stay friends. They hope to find a new house."
+    },
+    {
+      "setting": "T=1.0, top-k 50",
+      "temperature": 1.0,
+      "top_k": 50,
+      "word_inclusion": 0.4766666666666666,
+      "all_words": 0.105,
+      "repetition": 0.005787236374687659,
+      "diversity": 0.7746057985757884,
+      "judge_ppl": 5.237898767958992,
+      "stopped": 0.93,
+      "mean_tokens": 195.815,
+      "example": "Tom and Lily are friends. They like to play in the woods. One day, they find a big hole in the woods. They want to see what is inside.\n\n\"Let's go, Tom!\" Lily says. \"Maybe we can find a home here.\"\n\n\"OK, Lily,\" Tom says. They run towards the hole. They see a big house. They think it is a house. They are happy.\n\n\"Look, Lily! A house!\" Tom says. \"We are here to go in.\"\n\n\"Yes, Tom,\" Lily says. \"We can go in and peek.\"\n\nTom and Lily go in. They see cozy houses. They hear noises and sees people coming. They are scared. They see a house. It looks very old.\n\n\"Who am not?\" Lily asks.\n\n\"It is a big house,\" Tom says. \"We are in the house. You look like a house house.\"\n\nThey go in the hole. They see many rooms. They see toys and books and toys.\n\n\"Hello, can we be here?\" Tom says.\n\n\"Hello, this is Anna and this is Ben,\" Lily says.\n\n\"Wels, play and have fun,\" Tom says.\n\nThey are happy. They do not see the house. They hope it is not a friendly house. They hope it will escape soon."
+    },
+    {
+      "setting": "T=1.0, top-p 0.9",
+      "temperature": 1.0,
+      "top_p": 0.9,
+      "word_inclusion": 0.475,
+      "all_words": 0.095,
+      "repetition": 0.00750697599643407,
+      "diversity": 0.7322921176196343,
+      "judge_ppl": 3.873930068547292,
+      "stopped": 0.955,
+      "mean_tokens": 186.365,
+      "example": "Tom and Lily are friends. They like to play in the woods. One day, they find a big hole in the woods. They want to see what is inside.\n\n\"Let's go, Tom!\" Lily says. \"Maybe we can find a home here.\"\n\n\"OK, Lily,\" Tom says. They run towards the hole. They see a big house. They think it is a house. They are happy.\n\n\"Look, Lily! A house!\" Tom says. \"We are here to go in.\"\n\n\"Yes, Tom,\" Lily says. \"We can go in and explore.\"\n\nBut then they hear a loud noise. It is a big house. It has a big tree in the middle. They see a house. It is very old.\n\n\"Who is there?\" Lily asks.\n\n\"It is a house,\" Tom says. \"You are a infant. You live here. Come, I will take you.\"\n\nLily and Tom are excited. They are happy to see the house. They run to the house. They knock on the door. But no one hears them.\n\n\"Who are you?\" Lily asks.\n\n\"Hello, I am Lily. This is my house,\" Tom says. \"What is your name?\"\n\n\"I am Tom,\" Lily says. \"Do you want to play with us?\"\n\nTom and Lily are curious. They have never played with the door. They think it is a safe place.\n\n\"Yes, you are a nice friend,\" Tom says. \"I will be your friend. But"
+    },
+    {
+      "setting": "T=1.0, min-p 0.1",
+      "temperature": 1.0,
+      "min_p": 0.1,
+      "word_inclusion": 0.5366666666666666,
+      "all_words": 0.115,
+      "repetition": 0.013284721008924772,
+      "diversity": 0.6592072695215814,
+      "judge_ppl": 2.823407479122267,
+      "stopped": 0.97,
+      "mean_tokens": 182.88,
+      "example": "Tom and Lily are friends. They like to play in the woods. One day, they find a big tree with many leaves. They want to climb the tree and see the birds and the bugs.\n\n\"Let's climb the tree!\" Tom says. He runs to the tree and climbs up.\n\n\"Wait for me!\" Lily says. She is scared. She does not want to fall. She runs to the tree and climbs on the branches. She is brave. She reaches for Tom's hand.\n\n\"Here, Tom!\" Lily says. She gives Tom a hug. \"I am brave. I will help you.\"\n\nTom stops and looks at Lily. He sees her hand. He sees a big hole. He is scared. He knows what is inside.\n\n\"Lily, come down!\" Tom says. \"You will find us!\"\n\nLily and Tom run away. They are safe. They are happy. They are safe. They are safe. They hug each other. They are friends."
+    },
+    {
+      "setting": "T=1.0, top-k 50, top-p 0.9",
+      "temperature": 1.0,
+      "top_k": 50,
+      "top_p": 0.9,
+      "word_inclusion": 0.5,
+      "all_words": 0.11,
+      "repetition": 0.010023295641974277,
+      "diversity": 0.7118473558901446,
+      "judge_ppl": 3.3994205411962906,
+      "stopped": 0.955,
+      "mean_tokens": 184.995,
+      "example": "Tom and Lily are friends. They like to play in the woods. One day, they find a big hole in the woods. They want to see what is inside.\n\n\"Let's go, Tom!\" Lily says. \"Maybe we can find a home here.\"\n\n\"OK, Lily,\" Tom says. They run towards the hole. They see a big house. They think it is a house. They are happy.\n\n\"Look, Lily! A house!\" Tom says. \"We are here to go in.\"\n\n\"Yes, Tom,\" Lily says. \"We can go in and explore.\"\n\nBut then they hear a loud noise. It is a big house. It has a big tree in the middle. They see a house. It is very old.\n\n\"Who is there?\" Lily asks.\n\n\"It is a house,\" Tom says. \"You are a house. Come in. I have a garden. I will take you.\"\n\nLily and Tom are excited. They are happy to see the house. They run to the house. They knock on the door. But no one hears them.\n\n\"Who are you?\" Lily asks.\n\n\"Hello, I am Lily. This is my house,\" Tom says. \"What is your name?\"\n\n\"I am Tom,\" Lily says. \"Do you want to play with us?\"\n\nTom and Lily are curious. They have never played with the door. They think it is a safe house.\n\n\"Yes, you are a nice friend,\" Tom says. \"I will be your friend. But"
+    },
+    {
+      "setting": "T=1.3, top-p 0.9",
+      "temperature": 1.3,
+      "top_p": 0.9,
+      "word_inclusion": 0.355,
+      "all_words": 0.04,
+      "repetition": 0.0006926415257176182,
+      "diversity": 0.8827639037842807,
+      "judge_ppl": 16.473846259868093,
+      "stopped": 0.885,
+      "mean_tokens": 211.505,
+      "example": "Tom and Lily are friends. They like to play in the woods. One day, they find a big hole in the woods. They want to see what is inside.\n\n\"Let's look around the hole. Maybe I find some toys in this hole,\" Tom says.\n\n suggested they leave their tree and run back to the hole. They walk into the hole, where their trunk is gray and nice. The trunk has many branches and leaves that bounce in the hole.\n\nSuddenly, they hears a voice. \"Shhh, sir. We just get to find a friend inside.\" It is Ben's friend, Lily. She is holding the level. She is happy and holding his hand.\n\n\"Hi, I'm Tom. Who is your friend?\" he says.\n\n\"Hey, Lily, you belong near the hole! It is a place with no toys or sweetie on here!\" he says.\n\nLily and Tom look down. They see Tom. He is with him. They think he looks lonely and mean.\n\n\"Who was that hiding?\" they say together.\n\n\"We were having fun, Tom. But come on, come down. It is not a good place to be here. It is bad. You could getten our branches or spotets. Give them back to me and jump with me,\" she says.\n\nLily and Tom want to help him, but they think. They think the tree will not control the leaves and leaves or dirt under the dirt. But they have to be"
+    },
+    {
+      "setting": "T=1.3 (pure sampling)",
+      "temperature": 1.3,
+      "word_inclusion": 0.2833333333333333,
+      "all_words": 0.01,
+      "repetition": 0.0005585448512329927,
+      "diversity": 0.9325763407749551,
+      "judge_ppl": 53.10212544500576,
+      "stopped": 0.84,
+      "mean_tokens": 210.795,
+      "example": "Tom and Lily are houses below love. They have many houses in their homes home. They love to play outside in the sun.\n\nOne day, they hear a loud noise. It sounds like that. They be creative. They go to look at the tree. They see stars and animals but treasure children do bright. The tree has to go EE fall! Tom and Lily have football al penny.\n\nTom has an idea. He calls Lily. He.\"\n\n\"Do you think you want to have your seek?\"\n\nLily weves wrench leaves a silly tree or a favorite spot in the grass. Then she thinks of the wind and the birds. She forgets about Ben. She smiles. She looks heavy too.\n\n\"How about ketchup, Tom? It's good! And I know this from War D?\" she says.\n\nTom and Lily both slide on the eachrow, licks in the head. Then they forgot about Sam and Lily. They run to the tree, where Tom hops out.\n\n\"Let's go!\" Tom and Lily say.\n\n\"OK, come on it, bodd in the trunks!\" Tom and Lily say. They do\"Help,pper day!\" they screamed.\n\nBut the door is locked. They looked everywhere, but they could not find them. The house bojight logs the chest off the mother adders. Their community incl protectw were new and quiet. They pushed them, sumping"
+    }
+  ]
+}
