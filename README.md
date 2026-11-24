@@ -8,8 +8,8 @@ A small LLaMA-style language model built from scratch: pretrained, instruction-t
 
 | Part | What | Status |
 |---|---|---|
-| 1. Pretrain | LLaMA architecture (RoPE, RMSNorm, SwiGLU, GQA) + custom BPE tokenizer, trained on TinyStories, with controlled ablations | ✅ (seed 2 pending) |
-| 2. Instruction-tune | SFT so the model follows commands ("write a story about X using words Y, Z") | ⏳ |
+| 1. Pretrain | LLaMA architecture (RoPE, RMSNorm, SwiGLU, GQA) + custom BPE tokenizer, trained on TinyStories, with controlled ablations | ✅ |
+| 2. Instruction-tune | SFT so the model follows commands ("write a story about X using words Y, Z") | ✅ |
 | 3. Serve fast | KV cache, sampling, continuous batching, streaming FastAPI ✅ · INT8 quantization, speculative decoding, Gradio demo ⏳ | 🔨 |
 
 ## Project layout
@@ -122,32 +122,66 @@ One decode step costs 5.4 ms for 1 row and 16.5 ms for 16 rows: 16× the tokens 
 GPT-2 baseline vs each LLaMA change on its own vs all of them together. Every run used the same data,
 data order, tokenizer, 100M-token budget, optimizer and learning-rate schedule, evaluation windows and
 precision ([experiments/PROTOCOL.md](experiments/PROTOCOL.md)). Small size: 6 layers, 384 dims, 512-token
-context. Trained on Kaggle T4 GPUs. Seed 1; seed 2 is pending.
+context. Trained on Kaggle T4 GPUs. **Two seeds per configuration**, reported as mean ± std
+(the seed changes the initialization; the data order is fixed).
 
-| change vs GPT-2 baseline | params | val loss | val bits/byte | Δ loss | reaches baseline's final loss at | train tok/s |
+| change vs GPT-2 baseline | params | val loss | val bits/byte | Δ loss (seed 1 / seed 2) | reaches baseline's final loss at | train tok/s |
 |---|---|---|---|---|---|---|
-| baseline (learned positions, LayerNorm, GELU, multi-head attention) | 12.39M | 1.8329 | 0.6490 | — | 100M tokens | 24,902 |
-| RoPE | 12.19M | 1.7621 | 0.6240 | **−0.071** | 74M (1.35×) | 22,277 |
-| SwiGLU (same params) | 12.39M | 1.8126 | 0.6418 | −0.020 | 89M (1.12×) | 22,985 |
-| RMSNorm | 12.39M | 1.8312 | 0.6484 | −0.002 | 99M (1.01×) | 23,823 |
-| GQA, 2 KV heads | 11.21M | 1.8468 | 0.6540 | +0.014 | not reached | 26,202 |
-| **all four = mini-LLaMA** | **11.02M** | **1.7208** | **0.6093** | **−0.112** | **61M (1.65×)** | 22,448 |
+| baseline (learned positions, LayerNorm, GELU, multi-head attention) | 12.39M | 1.8322 ± 0.0010 | 0.6488 | — | 100M tokens | 24,952 |
+| RoPE | 12.19M | 1.7536 ± 0.0120 | 0.6209 | **−0.079** (−0.071 / −0.086) | 72M (1.39×) | 22,331 |
+| SwiGLU (same params) | 12.39M | 1.8062 ± 0.0090 | 0.6396 | −0.026 (−0.020 / −0.032) | 87M (1.15×) | 23,010 |
+| RMSNorm | 12.39M | 1.8322 ± 0.0014 | 0.6488 | 0.000 (−0.002 / +0.002) | ~100M (no gain) | 23,826 |
+| GQA, 2 KV heads | 11.21M | 1.8480 ± 0.0017 | 0.6544 | +0.016 (+0.014 / +0.018) | not reached | 26,209 |
+| **all four = mini-LLaMA** | **11.02M** | **1.7254 ± 0.0065** | **0.6110** | **−0.107** (−0.112 / −0.101) | **62M (1.61×)** | 22,451 |
 
 ![validation loss curves](experiments/loss_curves.png)
 
-- **RoPE is the biggest single win** (−0.071), with 0.2M fewer parameters, since the position table is gone.
-- **SwiGLU helps at equal parameter count** (−0.020), but trains about 8% slower per token.
-- **RMSNorm changes nothing measurable** (−0.002 is within noise). That's expected: it makes the norm
-  cheaper, not the model better. Here it's even a little slower, because it's written as plain PyTorch ops
-  while LayerNorm has a fused kernel.
-- **GQA costs some quality** (+0.014) in exchange for 9.5% fewer parameters, faster training and a 3× smaller
-  KV cache. It's an inference trade-off, and it lets more requests fit in a batch.
-- **The changes combine better than their sum:** the four single deltas add up to −0.079, the full model
-  gets −0.112.
-- **The mini-LLaMA reaches the baseline's final loss with 61% of the training tokens.** That's measured on the
-  validation curve (evaluated every ~6.5M tokens, linearly interpolated), mid-schedule. A run budgeted for 60M
-  tokens would anneal its learning rate and end lower, so 1.65× is a conservative figure.
+*Solid and dashed lines are the two seeds.*
 
-Caveats: one seed so far, so the RMSNorm and SwiGLU gaps still need error bars from seed 2; RoPE and
-the full model are far beyond typical seed noise. All runs trained in bfloat16, which the T4 only emulates.
-That's slower than float16 but identical across runs, so the comparison holds.
+- **RoPE is the biggest single win** (−0.079), with 0.2M fewer parameters, since the position table is gone.
+- **SwiGLU helps at equal parameter count** (−0.026 on both seeds), but trains about 8% slower per token.
+- **RMSNorm changes nothing measurable**: the difference flips sign between seeds. That's expected: it makes
+  the norm cheaper, not the model better. Here it's even a little slower, because it's written as plain
+  PyTorch ops while LayerNorm has a fused kernel.
+- **GQA costs some quality** (+0.016 on both seeds) in exchange for 9.5% fewer parameters, faster training and
+  a 3× smaller KV cache. It's an inference trade-off, and it lets more requests fit in a batch.
+- **The changes combine better than their sum:** the four single deltas add up to −0.089, the full model
+  gets −0.107. With two seeds this is suggestive rather than proven.
+- **The mini-LLaMA reaches the baseline's final loss with 62% of the training tokens** (61M and 64M on the
+  two seeds). That's measured on the validation curve (evaluated every ~6.5M tokens, linearly interpolated),
+  mid-schedule. A run budgeted for 60M tokens would anneal its learning rate and end lower, so 1.61× is a
+  conservative figure.
+
+Caveats: two seeds give a rough error bar, not a tight one. Seed-to-seed spread is 0.001 for the baseline
+but about 0.01 for RoPE and SwiGLU; every effect except RMSNorm points the same way on both seeds. All runs
+trained in bfloat16, which the T4 only emulates. That's slower than float16 but identical across runs, so
+the comparison holds.
+
+### Part 2: does instruction tuning work?
+
+The seed-1 mini-LLaMA, fine-tuned for one epoch on 100k TinyStories-Instruct examples (3,125 steps of 32,
+lr 1e-4, loss on response tokens only). 8 minutes on one T4 in float16. Validation loss on response tokens
+went from 1.729 to 1.434 and was still falling slowly at the end.
+
+Evaluation: 200 held-out instructions, each asking for a story that uses 3 given words (temperature 0.7,
+top-p 0.9, up to 300 tokens). The pretrained model gets the instruction as plain text: it has never seen the
+chat format, so its score is the chance level, how often the words show up anyway.
+
+| model | required words used | all 3 words used | stopped on its own | mean length |
+|---|---|---|---|---|
+| pretrained mini-LLaMA (chance level) | 4.0% | 0.0% | 99.0% | 175 tokens |
+| **after SFT** | **50.7%** | **13.0%** | 97.5% | 179 tokens |
+
+- **The SFT model reads the instruction:** it uses 12.7× more of the required words than chance.
+- **It's partial, not reliable:** only 13% of stories use all three words. An 11M-parameter model trained
+  for 8 minutes follows instructions some of the time. Longer training is the obvious next step.
+
+Example (seed 0, CPU):
+
+> **Write a story. Use the words: rain, ball, happy.**
+>
+> Once upon a time, there was a little girl named Lily. She loved to play in the **rain** and get wet. One day,
+> she went outside to play and her feet were very wet. She ran and jumped, feeling so **happy**.
+>
+> Later that day, Lily and her family went to the park to play. They played on a **ball** and threw it back to
+> each other. …
