@@ -1,8 +1,22 @@
 # TinyLLaMA from scratch
 
 A small LLaMA-style language model built from scratch: pretrained, instruction-tuned, and served through a fast inference engine.
+Everything runs on free hardware: Kaggle T4 GPUs for training, a laptop CPU for the rest.
 
-> 🚧 Work in progress
+## Results at a glance
+
+- **Which LLaMA changes matter**: 6 configurations × 2 seeds under identical conditions. The full mini-LLaMA
+  beats the GPT-2 baseline by **0.107 validation loss** with 11% fewer parameters, and reaches the baseline's
+  final loss with **62% of the training tokens**. RoPE gives most of the gain; RMSNorm none.
+  [→ results](#part-1-which-llama-changes-matter)
+- **Instruction tuning**: uses **51%** of the words an instruction asks for, vs 4% for the pretrained model
+  (chance). [→ results](#part-2-does-instruction-tuning-work)
+- **Serving**: continuous batching for **5× throughput** with output identical to running each request alone;
+  INT8 weights **4× smaller** at no measurable quality loss; speculative decoding **1.3–1.4× faster** with
+  exactly the same output; a streaming API and a [web demo](#web-demo).
+  [→ batching](#continuous-batching) · [→ INT8](#int8-quantization) · [→ speculative](#speculative-decoding)
+- **Debugging finds**: a PyTorch threading trap that made the demo 10× slower, and why INT8 doesn't speed
+  up a model that fits in the CPU cache.
 
 ## The three parts
 
@@ -34,10 +48,11 @@ notebooks/     Kaggle notebooks used for GPU training
 
 ## Setup
 
-Inside WSL (Ubuntu):
+Linux, macOS or WSL (Ubuntu on Windows), Python 3.10+:
 
 ```bash
-cd /mnt/c/Users/<you>/Desktop/tinyllama
+git clone https://github.com/arshiafreen090/llm-from-scratch.git
+cd llm-from-scratch
 python3 -m venv .venv
 source .venv/bin/activate
 pip install torch --index-url https://download.pytorch.org/whl/cpu   # CPU-only build

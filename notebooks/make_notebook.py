@@ -28,8 +28,9 @@ The rules are in `experiments/PROTOCOL.md`.
    the browser (up to 12 hours), and everything in `/kaggle/working` is saved with the version.
 
 ## Seeds and sessions
-Seed 1 is done (results are in the repo's README). This version runs **seed 2** plus
-instruction tuning: about 4 hours on two T4s. Seed 1's results are merged locally afterwards.
+This reproduces the README's results: 6 configurations x 2 seeds, then instruction tuning.
+About 7.5 hours on two T4s, which fits in one 12-hour session. To split it, set `SEEDS = "1"`
+in one session and `SEEDS = "2"` in the next, with the first one's output added as an input.
 
 If a session times out, add the timed-out version as an input
 (**Add Input → Your Work → this notebook**): the "restore" cell copies its finished runs
@@ -102,15 +103,16 @@ md("""
 ## 6. The ablation runs
 6 configurations x the seeds below, one run per GPU at a time. Finished runs are skipped.
 
-**Precision must match across seeds.** Seed 1 was trained in bfloat16, so seed 2 uses
-bfloat16 too, even though float16 is faster on a T4. A brand-new comparison could use
-`DTYPE = "auto"` (float16 on a T4). The runner refuses to mix precisions in one results folder.
+**Precision must match across seeds.** The README's runs were trained in bfloat16, so this uses
+bfloat16 too, to reproduce them exactly, even though float16 is faster on a T4. A brand-new
+comparison could use `DTYPE = "auto"` (float16 on a T4, about 2x faster). The runner refuses to
+mix precisions in one results folder.
 
 Progress lines are printed as runs start and finish. Each run's full log is in
 `experiments/results/<run>/stdout.log`.
 """)
 code("""
-SEEDS = "2"
+SEEDS = "1 2"
 DTYPE = "bfloat16"
 !python -m experiments.run_ablations --seeds {SEEDS} --dtype {DTYPE} --data_dir {DATA}
 """)

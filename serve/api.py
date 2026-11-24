@@ -186,16 +186,28 @@ class ModelWorker:
         self.jobs.put(job)
         return job
 
+    def warm_up(self, n_tokens=32):
+        """The first generation after loading runs ~3x slower (PyTorch sets up its kernels
+        and its CPU thread pool). Run one at startup, through the queue like any request,
+        so it happens on the worker thread and no real client pays for it."""
+        job = self.submit(self.generator.encode_prompt("Once upon a time"),
+                          SamplingParams(max_new_tokens=n_tokens, temperature=0))
+        while job.out.get()[0] not in ("done", "error"):
+            pass
+
 
 # =============================================================================
 # The app
 # =============================================================================
 
 def create_app(generator: Generator = None, load_generator=None, max_waiting: int = 16,
-               timeout_s: float = 300.0, max_batch: int = 8) -> FastAPI:
+               timeout_s: float = 300.0, max_batch: int = 8, warm_up: bool = False) -> FastAPI:
     """Pass either a ready `generator` (tests) or a `load_generator` function (real server,
-    so the model is created on the worker thread). max_batch=1 turns batching off."""
+    so the model is created on the worker thread). max_batch=1 turns batching off.
+    warm_up=True runs one short generation before the app is returned."""
     worker = ModelWorker(load_generator or (lambda: generator), max_waiting, max_batch)
+    if warm_up:
+        worker.warm_up()
     gen = worker.generator
     cfg = gen.model.cfg
     app = FastAPI(title="llm-from-scratch", description="A small LLaMA-style model trained from scratch.")
@@ -280,7 +292,7 @@ def main():
 
     import uvicorn
     app = create_app(load_generator=lambda: Generator.from_checkpoint(args.ckpt, args.device, args.quant),
-                     max_waiting=args.max_waiting, max_batch=args.max_batch)
+                     max_waiting=args.max_waiting, max_batch=args.max_batch, warm_up=True)
     uvicorn.run(app, host=args.host, port=args.port)
 
 

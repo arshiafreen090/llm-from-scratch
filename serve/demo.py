@@ -200,10 +200,7 @@ def main():
     # the model is loaded ON the worker thread (see "HOW IT RUNS THE MODEL" above)
     worker = ModelWorker(lambda: Generator.from_checkpoint(args.ckpt, "cpu", args.quant),
                          max_waiting=16, max_batch=args.max_batch)
-    # warm-up: the first generation after loading runs ~3x slower (PyTorch sets up its
-    # kernels and threads), so do it now instead of on the first visitor's request
-    for _ in stream_story(worker, EXAMPLES[0], INSTRUCTION, 0.7, 0.9, 64, 0):
-        pass
+    worker.warm_up()  # the first generation is ~3x slower; get it out of the way now
     demo = build_demo(worker, os.path.basename(args.ckpt))
     # Gradio's request threads only wait on job queues, so let as many run as there are batch rows
     demo.queue(default_concurrency_limit=args.max_batch, max_size=32)

@@ -93,6 +93,11 @@ def test_stopping_early_frees_the_slot(worker):
     assert worker.running == 0 and worker.jobs.empty()
 
 
+def test_warm_up_runs_a_generation_and_frees_the_slot(worker):
+    worker.warm_up(n_tokens=8)
+    assert worker.running == 0 and worker.jobs.empty()
+
+
 def test_build_demo_without_launching(worker):
     import gradio as gr
     assert isinstance(build_demo(worker, "test.pt"), gr.Blocks)
