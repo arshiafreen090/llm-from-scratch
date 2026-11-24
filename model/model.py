@@ -65,8 +65,11 @@ class TinyLLaMA(nn.Module):
             nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
     def num_params(self):
-        # parameters() yields a tied weight only once, so it isn't double-counted
-        return sum(p.numel() for p in self.parameters())
+        # parameters() yields a tied weight only once, so it isn't double-counted.
+        # A quantized model (inference/quantize.py) keeps its weights as int8 buffers named
+        # "qweight"; named_buffers() also yields a shared (tied) one only once.
+        n = sum(p.numel() for p in self.parameters())
+        return n + sum(b.numel() for name, b in self.named_buffers() if name.endswith("qweight"))
 
     # -------------------------------------------------------------------------
 
@@ -114,7 +117,8 @@ class TinyLLaMA(nn.Module):
 
     def make_kv_caches(self, batch_size, device=None, dtype=None):
         """One empty KV cache per layer, sized for the full context length."""
-        ref = self.tok_emb.weight
+        # device and float type from a norm weight: it stays float even in a quantized model
+        ref = self.norm_f.weight
         return [KVCache(batch_size, self.cfg.block_size, self.cfg.n_kv_head, self.cfg.head_dim,
                         device or ref.device, dtype or ref.dtype)
                 for _ in range(self.cfg.n_layer)]

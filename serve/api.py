@@ -71,6 +71,7 @@ from pydantic import BaseModel, Field
 
 from inference.batching import BatchEngine, Sequence
 from inference.generate import GenerationResult, Generator
+from inference.quantize import MODES as QUANT_MODES
 from inference.sampling import SamplingParams
 
 
@@ -217,7 +218,7 @@ def create_app(generator: Generator = None, load_generator=None, max_waiting: in
                 "context_length": cfg.block_size, "n_layer": cfg.n_layer, "n_embd": cfg.n_embd,
                 "n_head": cfg.n_head, "n_kv_head": cfg.n_kv_head, "pos_emb": cfg.pos_emb,
                 "norm": cfg.norm, "mlp": cfg.mlp, "device": str(gen.device),
-                "instruction_tuned": gen.is_sft}
+                "quant": getattr(gen.model, "quant", None), "instruction_tuned": gen.is_sft}
 
     # Plain `def` endpoints run in FastAPI's thread pool, so waiting on a job here never
     # blocks the server (e.g. /health keeps answering while a generation runs).
@@ -272,10 +273,13 @@ def main():
     parser.add_argument("--max_waiting", type=int, default=16, help="queue length before returning 503")
     parser.add_argument("--max_batch", type=int, default=8,
                         help="requests decoded together per forward pass (1 = no batching)")
+    parser.add_argument("--quant", default=None, choices=QUANT_MODES,
+                        help="int8 weights. int8-dynamic is faster on CPU, but a request's output can then "
+                             "depend on the others in its batch (see inference/quantize.py)")
     args = parser.parse_args()
 
     import uvicorn
-    app = create_app(load_generator=lambda: Generator.from_checkpoint(args.ckpt, args.device),
+    app = create_app(load_generator=lambda: Generator.from_checkpoint(args.ckpt, args.device, args.quant),
                      max_waiting=args.max_waiting, max_batch=args.max_batch)
     uvicorn.run(app, host=args.host, port=args.port)
 

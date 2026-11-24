@@ -4,6 +4,7 @@ Text generation: prompt in, text out, with streaming and latency metrics.
     python -m inference.generate --ckpt checkpoints/smoke/smoke-tiny-llama.pt --prompt "Once upon a time"
     python -m inference.generate --ckpt ... --prompt "..." --temperature 0.7 --top_p 0.9 --repetition_penalty 1.2
     python -m inference.generate --ckpt ... --prompt "..." --temperature 0   # greedy, deterministic
+    python -m inference.generate --ckpt ... --prompt "..." --quant int8      # int8 weights (inference/quantize.py)
 
 In code:
     gen = Generator.from_checkpoint("checkpoints/small-llama-s1.pt")
@@ -27,6 +28,7 @@ from typing import List
 
 import torch
 
+from inference.quantize import MODES as QUANT_MODES, quantize_model
 from inference.sampling import SamplingParams, sample_next
 from model.config import ModelConfig
 from model.model import TinyLLaMA
@@ -61,14 +63,23 @@ class Generator:
         self.is_sft = is_sft  # instruction-tuned: expects the chat template
 
     @classmethod
-    def from_checkpoint(cls, path, device="auto"):
+    def from_checkpoint(cls, path, device="auto", quant=None):
+        """quant: None (as saved), "int8" or "int8-dynamic" (see inference/quantize.py).
+        A float checkpoint is quantized after loading; an int8 checkpoint (made by
+        `python -m inference.quantize`) loads as int8 by itself."""
         if device == "auto":
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-        ckpt = torch.load(path, map_location=device)
+            device = "cpu" if quant == "int8-dynamic" or not torch.cuda.is_available() else "cuda"
+        if quant == "int8-dynamic" and device != "cpu":
+            raise ValueError("int8-dynamic runs on CPU only; use --quant int8 on a GPU")
+        ckpt = torch.load(path, map_location="cpu")
         model = TinyLLaMA(ModelConfig(**ckpt["model_config"]))
+        if ckpt.get("quant"):
+            quantize_model(model, ckpt["quant"])  # give the model the int8 layout the weights were saved in
         # torch.compile saves weights as "_orig_mod.<name>"; strip that if present
         state = {k.removeprefix("_orig_mod."): v for k, v in ckpt["model"].items()}
         model.load_state_dict(state)
+        if quant:
+            quantize_model(model, quant)
         return cls(model.to(device), Tokenizer.load(ckpt["tokenizer"]), is_sft=ckpt.get("sft", False))
 
     def encode_prompt(self, prompt, chat=False):
@@ -182,11 +193,12 @@ def main():
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--num_samples", type=int, default=1)
     parser.add_argument("--device", default="auto")
+    parser.add_argument("--quant", default=None, choices=QUANT_MODES, help="quantize the weights when loading")
     parser.add_argument("--chat", action="store_true",
                         help="treat --prompt as an instruction (for instruction-tuned checkpoints)")
     args = parser.parse_args()
 
-    gen = Generator.from_checkpoint(args.ckpt, args.device)
+    gen = Generator.from_checkpoint(args.ckpt, args.device, args.quant)
     if args.chat and not gen.is_sft:
         print("warning: this checkpoint was not instruction-tuned; it has never seen the chat format\n")
     params = SamplingParams(max_new_tokens=args.max_new_tokens, temperature=args.temperature, top_k=args.top_k,

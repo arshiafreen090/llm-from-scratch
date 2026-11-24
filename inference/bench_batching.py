@@ -29,6 +29,7 @@ import torch
 
 from inference.batching import BatchEngine, Sequence
 from inference.generate import Generator
+from inference.quantize import MODES as QUANT_MODES, quantize_model
 from inference.sampling import SamplingParams
 from model.config import get_config
 from model.model import TinyLLaMA
@@ -113,18 +114,23 @@ def main():
     parser.add_argument("--batches", type=int, nargs="+", default=[1, 2, 4, 8, 16])
     parser.add_argument("--rate", type=float, default=None, help="Poisson arrivals per second (default: all at once)")
     parser.add_argument("--device", default="auto")
+    parser.add_argument("--quant", default=None, choices=QUANT_MODES, help="quantize the weights first")
     parser.add_argument("--out", default=None, help="save the results as JSON")
     args = parser.parse_args()
 
     if args.ckpt:
-        gen = Generator.from_checkpoint(args.ckpt, args.device)
+        gen = Generator.from_checkpoint(args.ckpt, args.device, args.quant)
     else:
         device = ("cuda" if torch.cuda.is_available() else "cpu") if args.device == "auto" else args.device
         torch.manual_seed(0)
-        gen = Generator(TinyLLaMA(get_config(args.size, "llama")).to(device), Tokenizer.load(args.tokenizer))
+        model = TinyLLaMA(get_config(args.size, "llama"))
+        if args.quant:
+            quantize_model(model, args.quant)
+        gen = Generator(model.to(device), Tokenizer.load(args.tokenizer))
     cfg = gen.model.cfg
     print(f"model: {gen.model.num_params() / 1e6:.1f}M params, {cfg.n_layer} layers, context {cfg.block_size}, "
-          f"device {gen.device}, torch threads {torch.get_num_threads()}")
+          f"weights {getattr(gen.model, 'quant', None) or 'float'}, device {gen.device}, "
+          f"torch threads {torch.get_num_threads()}")
     requests = make_requests(args.requests, args.min_new, args.max_new)
     arrival = f"Poisson, {args.rate:g} req/s" if args.rate else "all at once"
     print(f"{len(requests)} requests ({arrival}), {args.min_new}-{args.max_new} new tokens each\n")

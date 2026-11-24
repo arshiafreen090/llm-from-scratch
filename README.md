@@ -10,7 +10,7 @@ A small LLaMA-style language model built from scratch: pretrained, instruction-t
 |---|---|---|
 | 1. Pretrain | LLaMA architecture (RoPE, RMSNorm, SwiGLU, GQA) + custom BPE tokenizer, trained on TinyStories, with controlled ablations | ✅ |
 | 2. Instruction-tune | SFT so the model follows commands ("write a story about X using words Y, Z") | ✅ |
-| 3. Serve fast | KV cache, sampling, continuous batching, streaming FastAPI ✅ · INT8 quantization, speculative decoding, Gradio demo ⏳ | 🔨 |
+| 3. Serve fast | KV cache, sampling, continuous batching, streaming FastAPI, INT8 quantization ✅ · speculative decoding, Gradio demo ⏳ | 🔨 |
 
 ## Project layout
 
@@ -92,6 +92,12 @@ curl -N -X POST localhost:8000/generate -H "Content-Type: application/json" \
 # batching benchmark: the same requests with max_batch 1 (no batching) vs 2..16
 python -m inference.bench_batching             # all requests at once
 python -m inference.bench_batching --rate 4    # Poisson arrivals, 4 requests/s
+
+# INT8: write an 11 MB int8 checkpoint, or quantize any checkpoint while loading
+python -m inference.quantize --ckpt checkpoints/sft-small-llama-s1.pt     # -> sft-small-llama-s1-int8.pt
+python -m serve.api --ckpt checkpoints/sft-small-llama-s1-int8.pt
+python -m inference.generate --ckpt checkpoints/<run>.pt --quant int8 --prompt "Once upon a time"
+python -m inference.bench_quant --ckpt checkpoints/small-llama-s1.pt      # float32 vs int8: size, quality, speed
 ```
 
 ### Continuous batching
@@ -114,6 +120,41 @@ exactly the tokens they would produce alone; `tests/test_batching.py` checks thi
 | 4 req/s (Poisson) | 4 | keeps up | 65 ms | 1.1 s |
 
 One decode step costs 5.4 ms for 1 row and 16.5 ms for 16 rows: 16× the tokens for about 3× the time.
+
+### INT8 quantization
+
+[inference/quantize.py](inference/quantize.py) stores every weight matrix (all linear layers and the
+token embedding, 99.9% of the weights) as int8 with one float scale per output channel:
+`scale = max|row| / 127`, `q = round(w / scale)`. Per-channel scales give each row the full −127..127
+range, so a few large weights don't flatten everything else. With tied weights, the embedding and the
+output layer share one int8 matrix. Two modes:
+
+- **`int8` (weight-only):** int8 weights, float math. The scale is applied after the matmul:
+  `x @ (q·s)ᵀ = (x @ qᵀ)·s`. Every batch row is still computed on its own, so batched requests produce
+  exactly what they'd produce alone (tested).
+- **`int8-dynamic`:** the same int8 weights in PyTorch's int8×int8 kernel (qnnpack on ARM). The activations
+  are quantized on the fly with one scale per input tensor. That scale is shared by every row of a batch,
+  so a request's output can depend on its batch-mates.
+
+Mini-LLaMA (seed 1), laptop CPU, medians over 7 rounds in which the modes take turns:
+
+| weights | file | val loss | same top token as float32 | decode tok/s | prefill (256 tokens) | batched tok/s (16 requests) | SFT word inclusion* |
+|---|---|---|---|---|---|---|---|
+| float32 | 44.1 MB | 1.7054 | 100% | 198 | 19 ms | 838 | 52.8% |
+| **int8** | **11.2 MB** | **1.7055** | **99.3%** | 193 | 20 ms | 822 | **52.5%** |
+| int8-dynamic | 11.2 MB | 1.7156 | 94.6% | 209 | 70 ms | 619 | 52.3% |
+
+\*The SFT model on the same 200 held-out instructions, all on CPU (the 50.7% above was measured on a GPU,
+which draws different random numbers from the same seed).
+
+- **Weight-only int8: 4× smaller at no measurable cost.** Validation loss changes by 0.0001, and
+  instruction following is unchanged.
+- **It isn't faster here, and that's expected.** INT8 speeds up generation when reading the weights from
+  memory is the bottleneck, as with a 7B model (28 GB in float32). This model is 44 MB and mostly sits in
+  the CPU cache, so per-layer overhead dominates: attention, sampling and Python.
+- **Quantizing the activations doesn't pay off on this CPU.** It costs 100× more loss (+0.010 vs +0.0001),
+  and PyTorch's ARM int8 kernel is slow for multi-row inputs: prefill is 3.5× slower and batched
+  throughput 26% lower. Single-request decode is a tie within noise. For serving, use `int8`.
 
 ## Results
 

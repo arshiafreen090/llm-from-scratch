@@ -23,6 +23,7 @@ import re
 import statistics
 
 from inference.generate import Generator
+from inference.quantize import MODES as QUANT_MODES
 from inference.sampling import SamplingParams
 
 
@@ -70,6 +71,7 @@ def main():
     parser.add_argument("--max_new_tokens", type=int, default=300)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", default="auto")
+    parser.add_argument("--quant", default=None, choices=QUANT_MODES, help="quantize every checkpoint when loading")
     args = parser.parse_args()
 
     examples = load_examples(args.examples, args.n)
@@ -77,7 +79,9 @@ def main():
                             top_p=args.top_p, seed=args.seed)
     rows = []
     for path in args.ckpts:
-        gen = Generator.from_checkpoint(path, args.device)
+        gen = Generator.from_checkpoint(path, args.device, args.quant)
+        if getattr(gen.model, "quant", None):
+            path = f"{path} ({gen.model.quant})"
         mode = args.mode if args.mode != "auto" else ("chat" if gen.is_sft else "plain")
         r = evaluate(gen, examples, params, mode)
         rows.append((path, r))
