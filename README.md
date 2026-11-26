@@ -52,6 +52,15 @@ Or with Docker: `docker build -t tinyllama . && docker run -p 8000:7860 tinyllam
 | 2. Instruction-tune | SFT so the model follows commands ("write a story about X using words Y, Z") | ✅ |
 | 3. Serve fast | KV cache, sampling, continuous batching, INT8 quantization, speculative decoding, chat web UI, OpenAI-compatible streaming API with keys and rate limits, Docker deploy | ✅ |
 
+## How it fits together
+
+![Architecture: data and tokenizer, model, pretraining and SFT on Kaggle; checkpoint, INT8, ONNX and the Hugging Face repo; the inference engine, the FastAPI server with clients, and the in-browser demo](docs/architecture.png)
+
+Three lanes: **train** on free Kaggle GPUs, **package** the weights on a laptop (float32 → INT8 → ONNX →
+Hugging Face), and **serve** them two ways: a Python server with an OpenAI-compatible API, or the model
+running inside the visitor's browser. Every packaging step is checked against the original model, and the
+green figures in the diagram are measured in this repo. (`docs/make_architecture.py` draws it.)
+
 ## Project layout
 
 ```
@@ -161,7 +170,12 @@ python -m inference.bench_speculative --ckpt checkpoints/small-llama-s1.pt --dra
 `python -m serve.api` serves a chat page at `/` ([serve/web/](serve/web/): plain HTML, CSS and JavaScript,
 no build step). It has a sidebar with chat history and search (saved in the browser), streaming replies
 with a stop button, a ✓/✗ check of each required word, the speed and seed of every reply, sampling
-settings, and light and dark themes. It works on phones too.
+settings, and light and dark themes. It works on phones too. A link can carry a request:
+`?q=write+a+story+about+a+brave+dragon&send=1` fills the box and sends it when the model is ready.
+
+![The chat page before the first message: sidebar, example requests and the message box](docs/ui-empty.png)
+
+![A finished reply: the story, a 2/2 required-words check, 178 tokens at 233 tokens/s and the seed](docs/ui-story.png)
 
 The page talks to the same endpoint any client can use, **`POST /v1/chat/completions`**, which follows the
 OpenAI chat API ([serve/openai_compat.py](serve/openai_compat.py)). So the official OpenAI libraries work

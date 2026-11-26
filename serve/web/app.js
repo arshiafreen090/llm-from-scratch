@@ -539,3 +539,15 @@ if (CONFIG.mode === "browser") {
   loadInfo();
   setInterval(checkHealth, 30000);
 }
+
+// Shareable links: ?q=<request> fills the box; add &send=1 to send it as soon as the model is ready
+// (e.g. .../?q=write+a+story+about+a+brave+dragon&send=1). Used for the README screenshots too.
+const linkQuery = new URLSearchParams(location.search).get("q");
+if (linkQuery) {
+  $("prompt").value = linkQuery;
+  autoGrow();
+  if (new URLSearchParams(location.search).get("send") === "1") {
+    const ready = () => CONFIG.mode === "browser" ? browserBackend.ready || browserBackend.failed : !!state.info;
+    const tick = setInterval(() => { if (ready()) { clearInterval(tick); send(linkQuery); } }, 200);
+  }
+}
