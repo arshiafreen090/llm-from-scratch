@@ -12,8 +12,10 @@ install and no server · [Model files on Hugging Face](https://huggingface.co/af
   beats the GPT-2 baseline by **0.107 validation loss** with 11% fewer parameters, and reaches the baseline's
   final loss with **62% of the training tokens**. RoPE gives most of the gain; RMSNorm none.
   [→ results](#part-1-which-llama-changes-matter)
-- **Instruction tuning**: uses **51%** of the words an instruction asks for, vs 4% for the pretrained model
-  (chance). [→ results](#part-2-does-instruction-tuning-work)
+- **Instruction tuning**: the pretrained model uses 4% of the words an instruction asks for (chance); after
+  SFT, 51%. A second round trained on instructions phrased the way people type raised that to **62%** on
+  varied, never-seen phrasings, and topic following from 34% to **79%** on free-form requests.
+  [→ results](#part-2-does-instruction-tuning-work)
 - **Serving**: continuous batching for **5× throughput** with output identical to running each request alone;
   INT8 weights **4× smaller** at no measurable quality loss; speculative decoding **1.3–1.4× faster** with
   exactly the same output; a chat web UI and an **OpenAI-compatible streaming API** with API keys and rate
@@ -27,16 +29,17 @@ install and no server · [Model files on Hugging Face](https://huggingface.co/af
 ## Try it in 2 minutes
 
 Quickest: open the [live demo](https://huggingface.co/spaces/afeening/tinyllama). To run the server with its API
-yourself, the trained models are in the [models-v1 release](https://github.com/arshiafreen090/llm-from-scratch/releases/tag/models-v1)
-and on [Hugging Face](https://huggingface.co/afeening/tinyllama-from-scratch), so nothing needs training:
+yourself, the trained models are on [Hugging Face](https://huggingface.co/afeening/tinyllama-from-scratch)
+(the v1 models also in the [models-v1 release](https://github.com/arshiafreen090/llm-from-scratch/releases/tag/models-v1)),
+so nothing needs training:
 
 ```bash
 git clone https://github.com/arshiafreen090/llm-from-scratch.git && cd llm-from-scratch
 python3 -m venv .venv && source .venv/bin/activate
 pip install torch --index-url https://download.pytorch.org/whl/cpu && pip install -r requirements-serve.txt
-mkdir -p checkpoints && curl -L -o checkpoints/sft-small-llama-s1-int8.pt \
-  https://github.com/arshiafreen090/llm-from-scratch/releases/download/models-v1/sft-small-llama-s1-int8.pt
-python -m serve.api --ckpt checkpoints/sft-small-llama-s1-int8.pt     # open http://localhost:8000
+mkdir -p checkpoints && curl -L -o checkpoints/sft-small-llama-s1-v2-int8.pt \
+  https://huggingface.co/afeening/tinyllama-from-scratch/resolve/main/sft-small-llama-s1-v2-int8.pt
+python -m serve.api --ckpt checkpoints/sft-small-llama-s1-v2-int8.pt     # open http://localhost:8000
 ```
 
 Or with Docker: `docker build -t tinyllama . && docker run -p 8000:7860 tinyllama`.
@@ -105,24 +108,25 @@ python -m experiments.plot
 ## Instruction tuning (Part 2)
 
 ```bash
-python -m data.prepare_sft                                   # TinyStories-Instruct -> chat-formatted examples
-python -m train.sft --init_ckpt checkpoints/small-llama-s1.pt
-python -m experiments.eval_instruct --ckpts checkpoints/small-llama-s1.pt checkpoints/sft-small-llama-s1.pt
-python -m inference.generate --ckpt checkpoints/sft-small-llama-s1.pt --chat \
-       --prompt "Write a story. Use the words: rain, ball, happy."
+python -m data.prepare_sft --max_train 300000                # TinyStories-Instruct -> chat-formatted examples
+python -m train.sft --init_ckpt checkpoints/small-llama-s1.pt --run_name sft-small-llama-s1-v2
+python -m experiments.eval_instruct --ckpts checkpoints/small-llama-s1.pt checkpoints/sft-small-llama-s1-v2.pt
+python -m inference.generate --ckpt checkpoints/sft-small-llama-s1-v2.pt --chat \
+       --prompt "write a story about a fish dancing in a river. use the words rain and happy"
 ```
 
-The chat template lives in one place ([tokenizer/chat.py](tokenizer/chat.py)) and is shared by data
-prep, training and inference. The loss is computed on response tokens only. Instruction following is
-measured as the share of required words that appear in the story, against a pretrained model's
-chance level.
+(`notebooks/kaggle_sft.ipynb` runs exactly this on a Kaggle T4 in about 40 minutes.) The chat template
+lives in one place ([tokenizer/chat.py](tokenizer/chat.py)) and is shared by data prep, training and
+inference. The loss is computed on response tokens only. Instruction following is measured as the share
+of required words that appear in the story, against a pretrained model's chance level, plus how many of
+the plot's words the story uses.
 
 ## Generating and serving
 
 ```bash
 # the server: chat UI at http://localhost:8000, OpenAI-compatible API at /v1, docs at /docs
-python -m inference.quantize --ckpt checkpoints/sft-small-llama-s1.pt    # once: the 11 MB int8 model
-python -m serve.api --ckpt checkpoints/sft-small-llama-s1-int8.pt --port 8000 --max_batch 8
+python -m inference.quantize --ckpt checkpoints/sft-small-llama-s1-v2.pt    # once: the 11 MB int8 model
+python -m serve.api --ckpt checkpoints/sft-small-llama-s1-v2-int8.pt --port 8000 --max_batch 8
 TINYLLAMA_API_KEYS=$(python -m serve.auth new-key) python -m serve.api --ckpt ...   # require an API key
 
 # the earlier Gradio demo (same model, simpler page)
@@ -451,7 +455,7 @@ chat format, so its score is the chance level, how often the words show up anywa
 
 - **The SFT model reads the instruction:** it uses 12.7× more of the required words than chance.
 - **It's partial, not reliable:** only 13% of stories use all three words. An 11M-parameter model trained
-  for 8 minutes follows instructions some of the time. Longer training is the obvious next step.
+  for 8 minutes follows instructions some of the time.
 
 Example (seed 0, CPU):
 
@@ -462,3 +466,46 @@ Example (seed 0, CPU):
 >
 > Later that day, Lily and her family went to the park to play. They played on a **ball** and threw it back to
 > each other. …
+
+#### v2: teaching it how people actually ask
+
+In the demo, *"write a story about fish which is dancing in river. use words octopus and jellyfish"* got a
+story about a girl named Lily at the beach. Measured over 8 seeds, the model used the topic words (fish,
+river, dancing) 12% of the time, but **58–71%** when the same request was phrased like the training data
+(*"Write a story. Use the words: … Plot: A fish dances in the river."*). The model had learned v1's 45 fixed
+instruction templates, not the request. A second cause is separate and not fixable by phrasing: *octopus*
+appears about 2,000 times in the 100M training tokens and *jellyfish* is two tokens; *ball* appears 70,000
+times. The model rarely produces words it barely knows.
+
+So the SFT data was rebuilt ([data/prepare_sft.py](data/prepare_sft.py)): the same annotations phrased many
+ways (lowercase, no punctuation, *"write a story about <plot>"*, *"use words a and b"*, words in any order or
+only some of them, the plot included 70% of the time), 300k examples instead of 100k, and a few phrasings
+**held out of training** so the validation set can tell "follows the request" from "recognises the sentence".
+Same compute as v1 × 3 (9,375 steps, 25 minutes on a T4).
+
+Both models on the same 300 validation instructions and seeds; "unseen" rows use phrasings neither model
+trained on:
+
+| model | phrasing | required words used | all words used | plot words used | stopped on its own |
+|---|---|---|---|---|---|
+| v1 (45 templates, 100k examples) | all | 38.8% | 7.3% | 38.5% | 96.3% |
+| v1 | unseen | 37.1% | 7.9% | 38.2% | 96.0% |
+| **v2 (varied phrasings, 300k examples)** | all | **62.4%** | **24.0%** | **53.0%** | 98.7% |
+| **v2** | unseen | **60.7%** | **21.9%** | **54.7%** | 98.7% |
+
+And on four free-form requests typed like a person would, 8 seeds each:
+
+| | required words | all required words | topic words |
+|---|---|---|---|
+| v1 | 46% | 16% | 34% |
+| **v2** | **62%** | **31%** | **79%** |
+
+- **Unseen phrasings score the same as seen ones** (61% vs 64%), so v2 generalises to how a request is
+  worded rather than matching sentences.
+- **The fish request now gets a fish:** *"Once upon a time, there was a little fish. The fish lived in the
+  river. The fish was very happy. One day, the fish wanted to dance…"*. Octopus and jellyfish still appear
+  only 19% of the time: the rare-word limit stands, and only more pretraining data would move it.
+- v1 scored 52.8% on its own template-phrased test set but 38.8% here: a model can look good on a test set
+  that shares its training templates. The held-out phrasings are what made the gap visible.
+
+The live demo and the Hugging Face model repo use v2.

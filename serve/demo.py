@@ -39,7 +39,7 @@ from inference.quantize import MODES as QUANT_MODES
 from inference.sampling import SamplingParams
 from serve.api import ModelWorker
 
-DEFAULT_CKPT = "checkpoints/sft-small-llama-s1-int8.pt"
+DEFAULT_CKPT = "checkpoints/sft-small-llama-s1-v2-int8.pt"
 REPO_URL = "https://github.com/arshiafreen090/llm-from-scratch"
 
 INSTRUCTION, COMPLETION = "Instruction", "Continue a story"
