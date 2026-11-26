@@ -28,6 +28,7 @@ Hugging Face `transformers` model.
 |---|---|---|
 | `sft-small-llama-s1-int8.pt` | instruction-tuned model, INT8 weights: writes a story from an instruction | 11 MB |
 | `small-llama-s1-int8.pt` | pretrained model, INT8 weights: continues a story | 11 MB |
+| `small-llama-s1.pt` | the same pretrained model in float32: the starting point for fine-tuning (`python -m train.sft --init_ckpt`) | 44 MB |
 | `draft-llama.pt` | 2.5M-parameter draft model for speculative decoding (float32) | 10 MB |
 | `sft-small-llama-s1-int8.onnx` (+ `.onnx.json`) | the instruction-tuned model as ONNX, with the KV cache as inputs/outputs: what the browser demo runs (ONNX Runtime Web). Checked to give token-for-token the same greedy output as PyTorch | 11 MB |
 | `tinystories_4k.json` | the 4,096-token BPE tokenizer all of them use | |

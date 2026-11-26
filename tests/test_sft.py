@@ -12,9 +12,10 @@ import pytest
 import torch
 from fastapi.testclient import TestClient
 
-from data.prepare_sft import build_instruction, parse_records
-from experiments.eval_instruct import word_present
+from data.prepare_sft import HELD_OUT_POOLS, build_instruction, parse_records
+from experiments.eval_instruct import evaluate, plot_words, word_present
 from inference.generate import Generator
+from inference.sampling import SamplingParams
 from model.config import get_config
 from model.model import TinyLLaMA
 from serve.api import create_app
@@ -50,11 +51,44 @@ def test_parse_records_handles_any_field_order():
     assert second["summary"] == "Lily rides a bike."
 
 
-def test_instruction_always_states_the_words():
-    record = {"words": ["quit", "oak"], "features": ["Dialogue", "Twist"], "summary": "x", "story": "y"}
-    for seed in range(20):
-        text = build_instruction(record, random.Random(seed))
-        assert "quit, oak" in text and "dialogue" in text and "twist" in text
+RECORD = {"words": ["quit", "oak", "gloomy"], "features": ["Dialogue", "Twist"],
+          "summary": "Sara finds an oak tree.", "sentence": "The sky was grey.", "story": "y"}
+
+
+def test_instruction_states_exactly_what_it_asks_for():
+    asked_fewer = used_topic = False
+    for seed in range(60):
+        text, info = build_instruction(RECORD, random.Random(seed))
+        low = text.lower()
+        assert info["words"] and set(info["words"]) <= set(RECORD["words"])
+        assert all(w in low for w in info["words"])            # every word asked for is in the text
+        assert "dialogue" in low and "twist" in low            # features are always stated
+        assert info["phrasing"] == "seen"
+        assert (info["topic"] is not None) == ("sara finds an oak tree" in low)   # topic reported iff included
+        asked_fewer |= len(info["words"]) < 3
+        used_topic |= info["topic"] is not None
+    assert asked_fewer and used_topic
+
+
+def test_held_out_phrasings_never_appear_in_training_instructions():
+    # the fixed text of each held-out template, e.g. "Required words:"
+    markers = [t.split("{")[0].strip().lower() for pool in HELD_OUT_POOLS.values() for t in pool]
+    markers = [m for m in markers if len(m) > 6]
+    train = [build_instruction(RECORD, random.Random(s))[0].lower() for s in range(300)]
+    for m in markers:
+        assert not any(m in t for t in train), m
+    text, info = build_instruction(RECORD, random.Random(1), "unseen")
+    assert info["phrasing"] == "unseen" and any(m in text.lower() for m in markers)
+
+
+def test_evaluate_reports_plot_words_and_phrasing_groups(tok):
+    gen = Generator(TinyLLaMA(get_config("tiny", "llama", block_size=128)), tok, is_sft=True)
+    examples = [{"instruction": "Use the words: dog.", "words": ["dog"], "topic": "A dog finds a bone.", "phrasing": "seen"},
+                {"instruction": "Required words: cat.", "words": ["cat"], "topic": None, "phrasing": "unseen"}]
+    r = evaluate(gen, examples, SamplingParams(max_new_tokens=10, temperature=0.7, top_p=0.9, seed=0), "chat")
+    assert r["n"] == 2 and r["n_with_plot"] == 1 and set(r["by_phrasing"]) == {"seen", "unseen"}
+    assert r["by_phrasing"]["unseen"]["plot_words"] is None
+    assert plot_words("Lily rides a big bike to the park.") == ["lily", "rides", "bike", "park"]
 
 
 # ---- chat template and loss masking -------------------------------------------------
