@@ -229,6 +229,9 @@ code { font-family: ui-monospace, "Cascadia Code", Menlo, monospace; font-size: 
 .copy { border: 1px solid var(--border); background: var(--panel); border-radius: 7px; padding: 3px 9px; font-size: 12px; cursor: pointer; }
 .copy:hover { border-color: var(--accent); }
 
+/* elements for one mode only (window.TL_CONFIG.mode, set on <html> as data-mode) */
+[data-mode="browser"] .server-only, [data-mode="server"] .browser-only { display: none !important; }
+
 .toast {
   position: fixed; left: 50%; bottom: 96px; transform: translateX(-50%);
   background: var(--text); color: var(--bg); padding: 9px 16px; border-radius: 10px; font-size: 14px;

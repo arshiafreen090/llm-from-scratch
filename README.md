@@ -3,6 +3,9 @@
 A small LLaMA-style language model built from scratch: pretrained, instruction-tuned, and served through a fast inference engine.
 Everything runs on free hardware: Kaggle T4 GPUs for training, a laptop CPU for the rest.
 
+**▶ [Try it live](https://huggingface.co/spaces/afeening/tinyllama)**: the model runs inside your browser, with no
+install and no server · [Model files on Hugging Face](https://huggingface.co/afeening/tinyllama-from-scratch)
+
 ## Results at a glance
 
 - **Which LLaMA changes matter**: 6 configurations × 2 seeds under identical conditions. The full mini-LLaMA
@@ -14,15 +17,18 @@ Everything runs on free hardware: Kaggle T4 GPUs for training, a laptop CPU for 
 - **Serving**: continuous batching for **5× throughput** with output identical to running each request alone;
   INT8 weights **4× smaller** at no measurable quality loss; speculative decoding **1.3–1.4× faster** with
   exactly the same output; a chat web UI and an **OpenAI-compatible streaming API** with API keys and rate
-  limits. [→ batching](#continuous-batching) · [→ INT8](#int8-quantization) ·
-  [→ speculative](#speculative-decoding) · [→ UI and API](#web-ui-and-openai-compatible-api)
+  limits; and an **in-browser version** (ONNX + WebAssembly, ~250 tokens/s, the same greedy output as PyTorch).
+  [→ batching](#continuous-batching) · [→ INT8](#int8-quantization) ·
+  [→ speculative](#speculative-decoding) · [→ UI and API](#web-ui-and-openai-compatible-api) ·
+  [→ in the browser](#running-in-the-browser)
 - **Debugging finds**: a PyTorch threading trap that made the demo 10× slower, and why INT8 doesn't speed
   up a model that fits in the CPU cache.
 
 ## Try it in 2 minutes
 
-The trained models are in the [models-v1 release](https://github.com/arshiafreen090/llm-from-scratch/releases/tag/models-v1),
-so nothing needs training:
+Quickest: open the [live demo](https://huggingface.co/spaces/afeening/tinyllama). To run the server with its API
+yourself, the trained models are in the [models-v1 release](https://github.com/arshiafreen090/llm-from-scratch/releases/tag/models-v1)
+and on [Hugging Face](https://huggingface.co/afeening/tinyllama-from-scratch), so nothing needs training:
 
 ```bash
 git clone https://github.com/arshiafreen090/llm-from-scratch.git && cd llm-from-scratch
@@ -52,7 +58,7 @@ model/         config, layers (RoPE, RMSNorm, SwiGLU, GQA), full model
 train/         pretraining and SFT training loops
 inference/     generation (KV cache + sampling), continuous batching, quantization, speculative decoding
 serve/         FastAPI server: chat web UI (serve/web/), OpenAI-compatible API, API keys, Gradio demo
-deploy/        Hugging Face Space template
+deploy/        static-site builder (in-browser demo), Hugging Face Space and model-card templates
 experiments/   ablations, benchmarks, plots
 checkpoints/   saved model weights (not in git)
 notebooks/     Kaggle notebooks used for GPU training
@@ -183,25 +189,53 @@ system prompts are accepted, since clients send them, but not used.
   accounts, a database, email checks and abuse handling, and that's far more infrastructure than one CPU
   serving an 11M model warrants.
 
+### Running in the browser
+
+The [live demo](https://huggingface.co/spaces/afeening/tinyllama) is the same chat page with no server behind it:
+the visitor's browser downloads the model (11 MB) and runs it. Hosting is free and never sleeps, and every
+visitor brings their own CPU.
+
+1. **Export to ONNX** ([inference/export_onnx.py](inference/export_onnx.py)). The model's KV cache writes
+   into a preallocated tensor in place, which a graph format can't express. So the exported graph takes the
+   past keys and values as **inputs** and returns the extended ones as **outputs**; prefill is the same graph
+   with an empty past. The weights stay int8 (11 MB). The export checks itself: the logits match PyTorch to
+   1e-5, and greedy generation gives identical tokens.
+2. **Port the tokenizer to JavaScript** ([serve/web/tokenizer.js](serve/web/tokenizer.js)). JavaScript regexes
+   have no possessive quantifiers, but in this split pattern they never change a match, so a plain translation
+   is exact. It gives identical ids to Python on test strings with emoji, CJK, Hindi, Arabic, accents,
+   numbers, contractions and typed special tokens.
+3. **Run it in a Web Worker** ([serve/web/engine.js](serve/web/engine.js)) with ONNX Runtime Web
+   (WebAssembly, one thread). Greedy output in the browser matched PyTorch character for character. On the
+   laptop: about 2–3 s to load, then **220–320 tokens/s**. One catch: single-threaded WebAssembly computes each
+   step synchronously, so the worker yields to its message queue every 4 tokens, or the Stop button would only
+   be seen after the whole story.
+
+```bash
+pip install onnx onnxruntime onnxscript                                # export tools (not needed to serve)
+python -m inference.export_onnx --ckpt checkpoints/sft-small-llama-s1-int8.pt
+python -m deploy.build_static --local && python -m http.server -d build/site 8080   # http://localhost:8080
+```
+
 ### Deploying it
 
-**Hugging Face Spaces** (free, a public URL like `https://<you>-tinyllama.hf.space`):
-1. Sign in at huggingface.co, then go to **New Space**: pick a name, choose **Docker** → **Blank**,
-   and keep the free CPU.
-2. Upload the two files in [deploy/huggingface/](deploy/huggingface/) (`Dockerfile`, `README.md`) under
-   **Files → Add file → Upload files**. The Space builds itself: it pulls the code from this repo and the
-   model from the release, in about 5 minutes.
-3. Optional: to require API keys, add a secret named `TINYLLAMA_API_KEYS` under **Settings → Variables
-   and secrets**.
+**The in-browser demo, on a free static Hugging Face Space** (how the live demo is hosted):
+```bash
+python -m deploy.build_static                       # the model is loaded from the Hugging Face model repo
+hf repos create <you>/tinyllama --repo-type space --space-sdk static
+hf upload <you>/tinyllama build/site . --repo-type space
+```
+Any static host works too (GitHub Pages, Netlify): upload `build/site`.
 
-A free Space has 2 vCPUs and goes to sleep after 48 hours without visitors; the first visit after that
-waits while it starts up again. Speed: limited to 2 cores of the laptop (fresh clone, `OMP_NUM_THREADS=2`),
-the server ran at **125–145 tokens/s for one request and ~600 tokens/s in total for 8 at once**. A Space's
-shared vCPUs are probably slower, so treat that as an upper bound.
+**The server with its API** (chat UI, `/v1` API, API keys):
+- **Any machine with Docker:** `docker build -t tinyllama . && docker run -p 8000:7860 tinyllama`. Add
+  `-e TINYLLAMA_API_KEYS=...` to require keys, and set `OMP_NUM_THREADS` to the number of CPUs the
+  container gets.
+- **Hugging Face Docker Space:** [deploy/huggingface/](deploy/huggingface/) has a ready Dockerfile that pulls
+  this repo and the model. Hugging Face now requires a PRO subscription to run Docker or Gradio Spaces;
+  only static Spaces are free, which is why the live demo runs in the browser.
 
-**Any machine with Docker**: `docker build -t tinyllama . && docker run -p 8000:7860 tinyllama`. Add
-`-e TINYLLAMA_API_KEYS=...` to require keys, and set `OMP_NUM_THREADS` to the number of CPUs the
-container gets.
+Speed of the server limited to 2 CPU cores (fresh clone, `OMP_NUM_THREADS=2`): **125–145 tokens/s for one
+request and ~600 tokens/s in total for 8 at once**.
 
 ### Continuous batching
 

@@ -50,14 +50,13 @@ Not done here (the next steps for a real server):
 """
 
 import codecs
-import os
 import time
 from collections import deque
 
 import torch
 
 from inference.generate import GenerationResult, Generator
-from inference.sampling import SamplingParams, sample_next
+from inference.sampling import SamplingParams, random_seed, sample_next
 
 
 class Sequence:
@@ -70,7 +69,7 @@ class Sequence:
 
         self.result = GenerationResult(text="", prompt_tokens=len(self.prompt_ids))
         # same seed rule as Generator: own RNG per request, seed reported for reproduction
-        self.result.seed = params.seed if params.seed is not None else int.from_bytes(os.urandom(8), "little") >> 1
+        self.result.seed = params.seed if params.seed is not None else random_seed()
 
         # filled in by the engine
         self.rng = None       # torch.Generator, created on the model's device at admission

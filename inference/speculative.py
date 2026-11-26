@@ -49,7 +49,6 @@ TWO DRAFTERS
 """
 
 import argparse
-import os
 import time
 from dataclasses import dataclass
 
@@ -57,7 +56,7 @@ import torch
 import torch.nn.functional as F
 
 from inference.generate import GenerationResult, Generator
-from inference.sampling import SamplingParams, token_probs
+from inference.sampling import SamplingParams, random_seed, token_probs
 
 
 def draw(dist, rng):
@@ -200,7 +199,7 @@ class SpeculativeGenerator(Generator):
             raise ValueError(f"prompt is {len(prompt_ids)} tokens, the model's context is {cfg.block_size}")
         result.prompt_tokens = len(prompt_ids)
         max_new = min(params.max_new_tokens, cfg.block_size - len(prompt_ids))
-        seed = params.seed if params.seed is not None else int.from_bytes(os.urandom(8), "little") >> 1
+        seed = params.seed if params.seed is not None else random_seed()
         result.seed = seed
         rng = torch.Generator().manual_seed(seed)
         self.stats = stats = SpecStats()

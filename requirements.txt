@@ -20,3 +20,8 @@ pytest
 fastapi
 uvicorn[standard]
 gradio
+
+# in-browser demo: ONNX export (inference/export_onnx.py) and its tests
+onnx
+onnxruntime
+onnxscript

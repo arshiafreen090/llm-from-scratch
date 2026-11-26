@@ -1,10 +1,13 @@
-// TinyLLaMA chat UI: plain JavaScript, no build step.
-// Talks to the server's OpenAI-compatible endpoint (/v1/chat/completions) with streaming,
-// so the page uses exactly the API that external clients use.
+// TinyLLaMA chat UI: plain JavaScript, no build step. Two ways to run the model (config.js):
+//   server   the page streams from the server's OpenAI-compatible /v1/chat/completions,
+//            exactly the API external clients use (serve/api.py)
+//   browser  the model is downloaded and run in this browser, in a Web Worker (engine.js)
 // Chats and settings live in this browser's localStorage only.
 "use strict";
 
 const $ = (id) => document.getElementById(id);
+const CONFIG = window.TL_CONFIG || { mode: "server" };
+document.documentElement.dataset.mode = CONFIG.mode;   // CSS shows .server-only / .browser-only
 const DEFAULTS = { temperature: 0.7, topP: 0.9, maxTokens: 300, seed: "", apiKey: "" };
 const EXAMPLES = [
   { title: "Rain, ball, happy", text: "Write a story. Use the words: rain, ball, happy." },
@@ -281,46 +284,35 @@ function regenerate(chatId, index) {
   stream(chat, index);
 }
 
-async function stream(chat, index) {
-  const msg = chat.messages[index];
-  const instruction = chat.messages[index - 1].content;
-  const row = $("messages").children[index];
-  const textEl = row.querySelector(".text");
-  row.classList.add("streaming");
+// ---------- backend 1: the server's OpenAI-compatible API ----------
+const serverBackend = {
+  // Streams one reply. Calls onDelta(text) per piece; resolves with {tokens, tps, seed, finish}.
+  async stream({ instruction, settings: s, signal, onDelta }) {
+    const body = {
+      model: state.info?.model || "tinyllama",
+      messages: [{ role: "user", content: instruction }],   // the model answers single instructions
+      stream: true,
+      temperature: Number(s.temperature),
+      top_p: Number(s.topP),
+      max_tokens: Number(s.maxTokens),
+    };
+    if (s.seed !== "" && s.seed !== null) body.seed = Number(s.seed);
+    const headers = { "Content-Type": "application/json" };
+    if (s.apiKey) headers.Authorization = `Bearer ${s.apiKey}`;
 
-  const s = state.settings;
-  const body = {
-    model: state.info?.model || "tinyllama",
-    messages: [{ role: "user", content: instruction }],   // the model answers single instructions
-    stream: true,
-    temperature: Number(s.temperature),
-    top_p: Number(s.topP),
-    max_tokens: Number(s.maxTokens),
-  };
-  if (s.seed !== "" && s.seed !== null) body.seed = Number(s.seed);
-  const headers = { "Content-Type": "application/json" };
-  if (s.apiKey) headers.Authorization = `Bearer ${s.apiKey}`;
-
-  const controller = new AbortController();
-  state.controller = controller;
-  setBusy(true);
-  let finished = false;
-  try {
-    const res = await fetch("/v1/chat/completions", { method: "POST", headers, body: JSON.stringify(body),
-                                                      signal: controller.signal });
+    const res = await fetch("/v1/chat/completions", { method: "POST", headers, body: JSON.stringify(body), signal });
     if (!res.ok) {
       let message = `HTTP ${res.status}`;
       try { message = (await res.json()).error?.message || message; } catch { /* not JSON */ }
-      if (res.status === 401) { openSettings(); $("apiKey").focus(); }
-      throw new Error(message);
+      throw Object.assign(new Error(message), { status: res.status });
     }
     // Server-Sent Events: "data: {...}\n\n" blocks; a network read can end mid-block
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
-    let buffer = "";
-    while (!finished) {
+    let buffer = "", stats = null;
+    for (;;) {
       const { value, done } = await reader.read();
-      if (done) break;
+      if (done) return stats;
       buffer += decoder.decode(value, { stream: true });
       let cut;
       while ((cut = buffer.indexOf("\n\n")) >= 0) {
@@ -329,24 +321,92 @@ async function stream(chat, index) {
         for (const line of block.split("\n")) {
           if (!line.startsWith("data: ")) continue;
           const data = line.slice(6);
-          if (data === "[DONE]") { finished = true; break; }
+          if (data === "[DONE]") return stats;
           const event = JSON.parse(data);
           if (event.error) throw new Error(event.error.message);
           const choice = event.choices?.[0];
-          if (choice?.delta?.content) {
-            msg.content += choice.delta.content;
-            textEl.textContent = msg.content;
-            scrollToBottom(false);
-          }
+          if (choice?.delta?.content) onDelta(choice.delta.content);
           if (choice?.finish_reason) {
             const x = event.x_tinyllama || {};
-            msg.stats = { tokens: event.usage?.completion_tokens ?? 0, tps: x.decode_tokens_per_s,
-                          seed: x.seed, finish: choice.finish_reason };
+            stats = { tokens: event.usage?.completion_tokens ?? 0, tps: x.decode_tokens_per_s,
+                      seed: x.seed, finish: choice.finish_reason };
           }
         }
       }
     }
+  },
+};
+
+// ---------- backend 2: the model inside this browser (engine.js in a Web Worker) ----------
+const browserBackend = {
+  worker: null, ready: false, failed: null, nextId: 1, pending: new Map(),
+
+  start() {
+    this.worker = new Worker("static/engine.js");
+    this.worker.onmessage = (e) => {
+      const m = e.data;
+      if (m.type === "progress") {
+        const pct = m.total ? Math.round((100 * m.loaded) / m.total) : null;
+        $("modelName").textContent = pct === null ? "downloading model…" : `downloading model… ${pct}%`;
+      } else if (m.type === "ready") {
+        this.ready = true;
+        showInfo({ model: m.meta.model, params: m.meta.params, quant: m.meta.quant, device: "your browser",
+                   api_key_required: false });
+      } else if (m.type === "error" && m.id === null) {
+        this.failed = m.message;
+        $("modelName").textContent = "model failed to load";
+        $("statusDot").className = "status-dot down";
+        toast(m.message, 8000);
+      } else {
+        const job = this.pending.get(m.id);
+        if (!job) return;
+        if (m.type === "token") job.onDelta(m.text);
+        else if (m.type === "done") { this.pending.delete(m.id); job.resolve(m.stats); }
+        else if (m.type === "error") { this.pending.delete(m.id); job.reject(new Error(m.message)); }
+      }
+    };
+    // resolve against the page: inside the worker, a relative URL would resolve against static/
+    const abs = (url) => new URL(url, location.href).href;
+    this.worker.postMessage({ type: "load", modelUrl: abs(CONFIG.modelUrl), metaUrl: abs(CONFIG.metaUrl),
+                              tokenizerUrl: abs(CONFIG.tokenizerUrl) });
+  },
+
+  stream({ instruction, settings: s, signal, onDelta }) {
+    if (this.failed) return Promise.reject(new Error(`The model couldn't load: ${this.failed}`));
+    if (!this.ready) return Promise.reject(new Error("The model is still downloading; try again in a moment."));
+    const id = this.nextId++;
+    return new Promise((resolve, reject) => {
+      this.pending.set(id, { onDelta, resolve, reject });
+      // Stop: the worker finishes the current step, then reports finish "stopped"
+      signal.addEventListener("abort", () => this.worker.postMessage({ type: "stop", id }));
+      this.worker.postMessage({
+        type: "generate", id, instruction, chat: true,
+        params: { temperature: Number(s.temperature), topP: Number(s.topP), maxTokens: Number(s.maxTokens),
+                  seed: s.seed !== "" && s.seed !== null ? Number(s.seed) : null },
+      });
+    });
+  },
+};
+
+const backend = CONFIG.mode === "browser" ? browserBackend : serverBackend;
+
+async function stream(chat, index) {
+  const msg = chat.messages[index];
+  const instruction = chat.messages[index - 1].content;
+  const row = $("messages").children[index];
+  const textEl = row.querySelector(".text");
+  row.classList.add("streaming");
+
+  const controller = new AbortController();
+  state.controller = controller;
+  setBusy(true);
+  try {
+    msg.stats = await backend.stream({
+      instruction, settings: state.settings, signal: controller.signal,
+      onDelta: (text) => { msg.content += text; textEl.textContent = msg.content; scrollToBottom(false); },
+    });
   } catch (err) {
+    if (err.status === 401) { openSettings(); $("apiKey").focus(); }
     if (err.name === "AbortError") {
       msg.stats = { ...(msg.stats || {}), tokens: msg.stats?.tokens ?? approxTokens(msg.content), finish: "stopped" };
     } else if (msg.content) {
@@ -439,17 +499,20 @@ $("openApiTop").onclick = openApi;
 document.querySelectorAll(".copy").forEach((b) => { b.onclick = () => copyText($(b.dataset.copy).textContent); });
 
 // ---------- server info and health ----------
+function showInfo(info) {
+  state.info = info;
+  $("modelName").textContent = info.model;
+  const quant = info.quant ? ` · ${info.quant}` : "";
+  const where = info.device === "your browser" ? "in your browser" : info.device.toUpperCase();
+  $("modelMeta").textContent = `${(info.params / 1e6).toFixed(0)}M params${quant} · ${where}`;
+  $("statusDot").className = "status-dot ok";
+  $("keyHint").textContent = info.api_key_required
+    ? "This server requires a key. Stored only in this browser."
+    : "This server doesn't require a key. Stored only in this browser.";
+}
 async function loadInfo() {
   try {
-    const info = await (await fetch("/info")).json();
-    state.info = info;
-    $("modelName").textContent = info.model;
-    const quant = info.quant ? ` · ${info.quant}` : "";
-    $("modelMeta").textContent = `${(info.params / 1e6).toFixed(0)}M params${quant} · ${info.device.toUpperCase()}`;
-    $("statusDot").className = "status-dot ok";
-    $("keyHint").textContent = info.api_key_required
-      ? "This server requires a key. Stored only in this browser."
-      : "This server doesn't require a key. Stored only in this browser.";
+    showInfo(await (await fetch("/info")).json());
   } catch {
     $("modelName").textContent = "server unreachable";
     $("statusDot").className = "status-dot down";
@@ -467,5 +530,12 @@ renderExamples();
 renderList();
 renderMessages();
 autoGrow();
-loadInfo();
-setInterval(checkHealth, 30000);
+if (CONFIG.mode === "browser") {
+  $("modelName").textContent = "downloading model…";
+  $("composerNote").textContent =
+    "Runs entirely in your browser: nothing you type leaves this device · Each message is answered on its own";
+  browserBackend.start();
+} else {
+  loadInfo();
+  setInterval(checkHealth, 30000);
+}

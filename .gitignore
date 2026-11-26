@@ -31,3 +31,6 @@ Thumbs.db
 .vscode/
 experiments/results_sft/
 experiments/results_draft/
+
+# static site output (deploy/build_static.py)
+build/

@@ -1,6 +1,8 @@
 # Dockerfile for a Hugging Face Space (Docker SDK). Upload it to the Space together with
 # the README.md next to it: the Space then builds the code from GitHub and the model from
-# the GitHub release, and needs nothing else. See README "Deploy" for the steps.
+# the GitHub release, and needs nothing else. See README "Deploying it".
+# Note: Hugging Face requires a PRO subscription to run Docker Spaces. The free option is the
+# in-browser demo on a static Space (deploy/build_static.py).
 
 FROM python:3.12-slim
 

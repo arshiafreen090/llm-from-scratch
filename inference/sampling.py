@@ -16,6 +16,7 @@ Hugging Face transformers):
 All functions take logits of shape (B, vocab) and return the same shape.
 """
 
+import os
 from dataclasses import dataclass
 from typing import Optional
 
@@ -36,6 +37,13 @@ class SamplingParams:
     # Special tokens are control signals, never visible text: after instruction tuning,
     # <|user|> means "the assistant's turn is over", so it must end the reply, not be printed.
     stop_at_special: bool = True
+
+
+def random_seed():
+    """A fresh random seed for a request that didn't send one. Below 2**53 on purpose: JSON
+    numbers become JavaScript numbers, which hold integers exactly only up to 2**53, so a
+    bigger seed shown in the web UI would be rounded and no longer reproduce its reply."""
+    return int.from_bytes(os.urandom(8), "little") >> 11
 
 
 def apply_repetition_penalty(logits, history, penalty):

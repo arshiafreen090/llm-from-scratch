@@ -86,6 +86,16 @@ def test_stream_gives_the_same_text_in_chunks(client):
     assert last["choices"][0]["finish_reason"] in ("stop", "length") and "usage" in last and "x_tinyllama" in last
 
 
+def test_random_seeds_survive_javascript_and_reproduce(client):
+    """The web UI shows each reply's seed; JavaScript numbers are exact only up to 2**53."""
+    first = client.post("/v1/chat/completions", json={"messages": [{"role": "user", "content": INSTRUCTION}],
+                                                      "max_tokens": 15, "temperature": 1.0}).json()
+    seed = first["x_tinyllama"]["seed"]
+    assert 0 <= seed < 2 ** 53
+    again = chat(client, max_tokens=15, temperature=1.0, seed=seed).json()
+    assert again["choices"][0]["message"]["content"] == first["choices"][0]["message"]["content"]
+
+
 def test_only_the_last_user_message_is_answered(client):
     alone = chat(client).json()["choices"][0]["message"]["content"]
     with_history = client.post("/v1/chat/completions", json={
@@ -122,7 +132,8 @@ def test_api_keys_are_enforced_when_configured(generator):
 
 
 def test_rate_limit_returns_429_with_retry_after(generator):
-    client = TestClient(create_app(generator, guard=Guard(limiter=RateLimiter(per_minute=60, burst=2))))
+    # 6/min = one new request every 10 s, so the bucket can't refill while the test runs
+    client = TestClient(create_app(generator, guard=Guard(limiter=RateLimiter(per_minute=6, burst=2))))
     assert chat(client).status_code == 200
     assert chat(client).status_code == 200
     r = chat(client)

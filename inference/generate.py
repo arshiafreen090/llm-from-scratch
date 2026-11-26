@@ -21,7 +21,6 @@ The two latency numbers that matter when serving an LLM:
 
 import argparse
 import codecs
-import os
 import time
 from dataclasses import dataclass, field
 from typing import List
@@ -29,7 +28,7 @@ from typing import List
 import torch
 
 from inference.quantize import MODES as QUANT_MODES, quantize_model
-from inference.sampling import SamplingParams, sample_next
+from inference.sampling import SamplingParams, random_seed, sample_next
 from model.config import ModelConfig
 from model.model import TinyLLaMA
 from tokenizer.chat import prompt_ids
@@ -108,7 +107,7 @@ class Generator:
         # request's output depend on whatever other requests ran before it (and on any other
         # code that draws random numbers). Without a seed we draw a fresh one and report it,
         # so any response can be reproduced exactly by sending the same seed back.
-        seed = params.seed if params.seed is not None else int.from_bytes(os.urandom(8), "little") >> 1
+        seed = params.seed if params.seed is not None else random_seed()
         result.seed = seed
         rng = torch.Generator(device=self.device).manual_seed(seed)
 

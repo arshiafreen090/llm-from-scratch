@@ -6,7 +6,8 @@
   <title>TinyLLaMA</title>
   <meta name="description" content="A small LLaMA-style language model, trained from scratch.">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%236d5dfc'/%3E%3Ctext x='16' y='22' font-size='16' text-anchor='middle' fill='white' font-family='sans-serif' font-weight='700'%3ETL%3C/text%3E%3C/svg%3E">
-  <link rel="stylesheet" href="/static/style.css">
+  <!-- relative paths: the same files work under the FastAPI server and on a static host -->
+  <link rel="stylesheet" href="static/style.css">
 </head>
 <body>
 <div class="app" id="app">
@@ -89,7 +90,7 @@
           <svg class="i-stop" viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
         </button>
       </form>
-      <div class="composer-note">Each message is answered on its own · Enter to send, Shift+Enter for a new line</div>
+      <div class="composer-note" id="composerNote">Each message is answered on its own · Enter to send, Shift+Enter for a new line</div>
     </footer>
   </main>
 </div>
@@ -120,7 +121,7 @@
       <input type="number" id="seed" placeholder="random" min="0">
       <small>Leave empty for a random seed. Every reply shows its seed, so you can reproduce it.</small>
     </label>
-    <label class="field" id="keyField">
+    <label class="field server-only" id="keyField">
       <span>API key</span>
       <input type="password" id="apiKey" placeholder="sk-tl-…" autocomplete="off">
       <small id="keyHint">Stored only in this browser.</small>
@@ -139,22 +140,32 @@
       <h2>Use this model from your own code</h2>
       <button class="icon-btn" value="close" aria-label="Close">✕</button>
     </header>
-    <p class="muted">The server speaks the <strong>OpenAI chat API</strong>, so the official OpenAI libraries and
+    <div class="browser-only">
+      <p class="muted">On this page the model runs <strong>inside your browser</strong> (ONNX Runtime Web), so
+        there is no server to call. To get the HTTP API, run the model's own server, on your computer or any
+        machine with Docker. It speaks the <strong>OpenAI chat API</strong>, with optional API keys and rate limits:</p>
+      <div class="snippet"><button type="button" class="copy" data-copy="selfHost">Copy</button><pre><code id="selfHost">git clone https://github.com/arshiafreen090/llm-from-scratch.git && cd llm-from-scratch
+docker build -t tinyllama . && docker run -p 8000:7860 tinyllama
+# then: OpenAI(base_url="http://localhost:8000/v1", api_key="any-text")</code></pre></div>
+      <p class="muted small">Full instructions: <a href="https://github.com/arshiafreen090/llm-from-scratch#web-ui-and-openai-compatible-api" target="_blank" rel="noopener">README → Web UI and OpenAI-compatible API</a></p>
+    </div>
+    <p class="muted server-only">The server speaks the <strong>OpenAI chat API</strong>, so the official OpenAI libraries and
       tools work: point them at this base URL.</p>
-    <div class="kv">
+    <div class="kv server-only">
       <div><span>Base URL</span><code id="baseUrl"></code><button type="button" class="copy" data-copy="baseUrl">Copy</button></div>
       <div><span>Model</span><code id="apiModel"></code><button type="button" class="copy" data-copy="apiModel">Copy</button></div>
       <div><span>API key</span><code id="apiKeyInfo"></code></div>
     </div>
-    <h3>curl (streaming)</h3>
-    <div class="snippet"><button type="button" class="copy" data-copy="curlSnippet">Copy</button><pre><code id="curlSnippet"></code></pre></div>
-    <h3>Python (<code>pip install openai</code>)</h3>
-    <div class="snippet"><button type="button" class="copy" data-copy="pySnippet">Copy</button><pre><code id="pySnippet"></code></pre></div>
-    <p class="muted small">Interactive docs for every endpoint: <a id="docsLink" href="/docs" target="_blank" rel="noopener">/docs</a></p>
+    <h3 class="server-only">curl (streaming)</h3>
+    <div class="snippet server-only"><button type="button" class="copy" data-copy="curlSnippet">Copy</button><pre><code id="curlSnippet"></code></pre></div>
+    <h3 class="server-only">Python (<code>pip install openai</code>)</h3>
+    <div class="snippet server-only"><button type="button" class="copy" data-copy="pySnippet">Copy</button><pre><code id="pySnippet"></code></pre></div>
+    <p class="muted small server-only">Interactive docs for every endpoint: <a id="docsLink" href="/docs" target="_blank" rel="noopener">/docs</a></p>
   </form>
 </dialog>
 
 <div class="toast" id="toast" role="status" hidden></div>
-<script src="/static/app.js"></script>
+<script src="static/config.js"></script>
+<script src="static/app.js"></script>
 </body>
 </html>
